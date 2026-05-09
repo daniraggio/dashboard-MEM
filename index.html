@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Dashboard MEM — Consumo & Contratos v7</title>
+<title>Dashboard MEM — Consumo & Contratos v8</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Bricolage+Grotesque:wght@400;600;800&display=swap" rel="stylesheet">
@@ -11,7 +11,7 @@
 <!--
 ================================================================================
 DASHBOARD MEM UNIFICADO — DOCUMENTACIÓN INTERNA (solo para Claude)
-Versión: 7
+Versión: 8
 Repositorio: daniraggio/dashboard-MEM
 URL: https://daniraggio.github.io/dashboard-MEM/
 ================================================================================
@@ -64,7 +64,10 @@ v4: Dashboard autónomo — todos los datos en daniraggio/dashboard-MEM;
 v5: Meses ocultos por defecto; filtro "Sin contratos"; fix matching NEMO con paréntesis
 v6: (numeración corregida en conversación)
 v7: Volumen vigente en badge de contratos; cache sessionStorage para XLSX;
-    renderizado virtual en tabla
+    renderizado virtual en tabla; tabla arranca con ancho completo
+v8: Sección de actualización de contratos — carga de 5 XLSX con drag&drop,
+    subida a GitHub via API con token hardcodeado, guarda semana de carga en
+    meta.json en el repo, invalida cache sessionStorage al actualizar
 ================================================================================
 -->
 
@@ -251,7 +254,31 @@ tr.vt-pad td { padding:0; border:none; background:transparent; }
 .tbl-search input::placeholder { color:var(--ink3); }
 .tbl-search-icon { position:absolute; left:9px; top:50%; transform:translateY(-50%); color:var(--ink3); font-size:13px; pointer-events:none; }
 
-/* ── SIDE PANEL ──────────────────────────────────────────────────────────────── */
+/* ── UPLOAD SECTION ──────────────────────────────────────────────────────────── */
+.upload-section { margin-top: 32px; }
+.upload-section .card-hd { margin-bottom: 20px; }
+
+.upload-single { position: relative; border: 2px dashed var(--border); border-radius: 10px; padding: 36px 24px; text-align: center; cursor: pointer; transition: all 0.2s; background: var(--bg2); display: flex; flex-direction: column; align-items: center; gap: 12px; }
+.upload-single:hover { border-color: var(--ink2); background: var(--surface); }
+.upload-single.drag-over { border-color: var(--blue); background: var(--blue-bg); }
+.upload-single.uploading { border-color: var(--amber); background: var(--amber-bg); cursor: default; pointer-events: none; }
+.upload-single.done  { border-color: var(--gume); border-style: solid; background: var(--green-bg); }
+.upload-single.error { border-color: var(--accent); border-style: solid; background: var(--red-bg); }
+.upload-single input[type=file] { position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; height: 100%; }
+.upload-single-icon  { font-size: 32px; line-height: 1; }
+.upload-single-title { font-family: 'DM Mono', monospace; font-size: 12px; color: var(--ink2); }
+.upload-single-files { display: flex; gap: 6px; flex-wrap: wrap; justify-content: center; }
+.upload-file-tag { font-family: 'DM Mono', monospace; font-size: 10px; background: var(--surface); border: 1px solid var(--border); border-radius: 4px; padding: 2px 8px; color: var(--ink3); }
+.upload-file-tag.ok   { background: var(--green-bg); border-color: var(--gume); color: var(--green-text); }
+.upload-file-tag.err  { background: var(--red-bg); border-color: var(--accent); color: var(--accent); }
+
+.upload-log { margin-top: 16px; background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; padding: 12px 16px; font-family: 'DM Mono', monospace; font-size: 11px; line-height: 1.8; color: var(--ink2); max-height: 200px; overflow-y: auto; display: none; }
+.upload-log.show { display: block; }
+.log-ok   { color: var(--gume); }
+.log-err  { color: var(--accent); font-weight: 600; }
+.log-warn { color: var(--amber); }
+.log-info { color: var(--ink3); }
+
 .side-panel { position:fixed; top:0; right:0; bottom:0; width:var(--panel-w); max-width:100vw; background:var(--surface); border-left:2px solid var(--ink); z-index:1000; overflow-y:auto; transform:translateX(100%); transition:transform 0.35s cubic-bezier(.4,0,.2,1); display:flex; flex-direction:column; }
 .side-panel.open { transform:translateX(0); }
 .panel-header { padding:20px 24px 16px; border-bottom:1.5px solid var(--border); position:sticky; top:0; background:var(--surface); z-index:2; display:flex; align-items:flex-start; justify-content:space-between; gap:12px; }
@@ -304,7 +331,7 @@ tr.vt-pad td { padding:0; border:none; background:transparent; }
   <div>
     <div class="eyebrow">
       Sistema de Análisis Energético — MEM
-      <span class="version-badge">v7 UNIFICADO</span>
+      <span class="version-badge">v8 UNIFICADO</span>
     </div>
     <h1>Grandes Usuarios<br><span>&amp; Contratos</span></h1>
   </div>
@@ -489,6 +516,34 @@ tr.vt-pad td { padding:0; border:none; background:transparent; }
     </table>
   </div>
 </div>
+<!-- UPLOAD SECTION -->
+<div class="card upload-section">
+  <div class="card-hd">
+    <div>
+      <div class="card-title">Actualización de contratos</div>
+      <div class="card-meta" id="uploadLastMeta">Cargando info de última actualización…</div>
+    </div>
+  </div>
+
+  <div class="upload-single" id="uploadSingle"
+       ondragover="uploadDragOver(event)"
+       ondragleave="uploadDragLeave(event)"
+       ondrop="uploadDrop(event)">
+    <input type="file" id="uploadInput" accept=".xlsx" multiple onchange="uploadChange(event)">
+    <div class="upload-single-icon" id="uploadIcon">📂</div>
+    <div class="upload-single-title" id="uploadTitle">Arrastrá los 5 archivos acá o hacé click para seleccionarlos</div>
+    <div class="upload-single-files" id="uploadFileList">
+      <span class="upload-file-tag">CONTRATOS.xlsx</span>
+      <span class="upload-file-tag">TOPES.xlsx</span>
+      <span class="upload-file-tag">SUMINISTROS.xlsx</span>
+      <span class="upload-file-tag">PARAMETROS_VARIABLES.xlsx</span>
+      <span class="upload-file-tag">CARACTERISTICAS.xlsx</span>
+    </div>
+  </div>
+
+  <div class="upload-log" id="uploadLog"></div>
+</div>
+
 </div><!-- /page -->
 
 <!-- PANEL OVERLAY -->
@@ -547,6 +602,8 @@ const REPO       = 'daniraggio/dashboard-MEM';
 const BASE_RAW   = `https://raw.githubusercontent.com/${REPO}/main`;
 const BASE_CONS  = `${BASE_RAW}/data/consumos/`;
 const BASE_CONT  = `${BASE_RAW}/data/contratos/`;
+const GH_TOKEN   = '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';
+const GH_API     = `https://api.github.com/repos/${REPO}/contents`;
 
 const DATA_FILES = [
   { file:'GUDI.xlsx',  type:'GUDI' },
@@ -1274,14 +1331,21 @@ function setTermTbl(val){ aTerm=val; syncFilterUI(); refresh(); }
 // Column resize
 function initColResize(){
   const tbl=document.getElementById('tbl');
-  tbl.style.tableLayout='fixed';
-  const ths=[...tbl.querySelectorAll('tr.sort-row th')];
-  ths.forEach(th=>{th.style.width=th.offsetWidth+'px';th.style.minWidth='40px';});
+  // No fijar table-layout:fixed en el boot — la tabla arranca con auto (ancho completo).
+  // Se fija a fixed solo cuando el usuario empieza a arrastrar una columna.
   tbl.querySelectorAll('.col-resizer').forEach(resizer=>{
     const th=resizer.parentElement;
     let startX,startW;
     resizer.addEventListener('mousedown',e=>{
       e.preventDefault();e.stopPropagation();
+      // Al primer drag, tomamos los anchos actuales y fijamos layout
+      if(tbl.style.tableLayout!=='fixed'){
+        tbl.style.tableLayout='fixed';
+        [...tbl.querySelectorAll('tr.sort-row th')].forEach(t=>{
+          t.style.width=t.offsetWidth+'px';
+          t.style.minWidth='40px';
+        });
+      }
       startX=e.clientX;startW=th.offsetWidth;
       resizer.classList.add('dragging');
       document.body.style.cursor='col-resize';document.body.style.userSelect='none';
@@ -1316,6 +1380,199 @@ function loadAll(){ loadConsumos(); loadContratos(); }
 
 // Cargar todo al iniciar
 loadAll();
+
+// ════════════════════════════════════════════════════════════════════════════════
+// SECCIÓN DE ACTUALIZACIÓN DE CONTRATOS — slot único, subida automática
+// ════════════════════════════════════════════════════════════════════════════════
+
+const UPLOAD_FILES = [
+  'CONTRATOS.xlsx',
+  'TOPES.xlsx',
+  'SUMINISTROS.xlsx',
+  'PARAMETROS_VARIABLES.xlsx',
+  'CARACTERISTICAS.xlsx',
+];
+
+function getISOWeek(date){
+  const d=new Date(Date.UTC(date.getFullYear(),date.getMonth(),date.getDate()));
+  const day=d.getUTCDay()||7;
+  d.setUTCDate(d.getUTCDate()+4-day);
+  const yearStart=new Date(Date.UTC(d.getUTCFullYear(),0,1));
+  return{week:Math.ceil((((d-yearStart)/86400000)+1)/7),year:d.getUTCFullYear()};
+}
+
+function uploadDragOver(e){ e.preventDefault(); document.getElementById('uploadSingle').classList.add('drag-over'); }
+function uploadDragLeave(e){ document.getElementById('uploadSingle').classList.remove('drag-over'); }
+function uploadDrop(e){
+  e.preventDefault();
+  document.getElementById('uploadSingle').classList.remove('drag-over');
+  processUploadFiles([...e.dataTransfer.files]);
+}
+function uploadChange(e){ processUploadFiles([...e.target.files]); }
+
+function addLog(msg,type='info'){
+  const log=document.getElementById('uploadLog');
+  log.classList.add('show');
+  log.innerHTML+=`<div class="log-${type}">${msg}</div>`;
+  log.scrollTop=log.scrollHeight;
+}
+
+function setUploadState(state,title){
+  const el=document.getElementById('uploadSingle');
+  el.className='upload-single'+(state?' '+state:'');
+  if(title) document.getElementById('uploadTitle').textContent=title;
+}
+
+function updateFileTags(found){
+  const list=document.getElementById('uploadFileList');
+  list.innerHTML=UPLOAD_FILES.map(f=>{
+    const cls=found[f]===true?'ok':found[f]===false?'err':'';
+    return`<span class="upload-file-tag ${cls}">${f}</span>`;
+  }).join('');
+}
+
+async function processUploadFiles(files){
+  const log=document.getElementById('uploadLog');
+  log.innerHTML=''; log.classList.add('show');
+
+  const byName={};
+  files.forEach(f=>{ byName[f.name.trim()]=f; byName[f.name.trim().toLowerCase()]=f; });
+
+  const found={};
+  const fileBuffers={};
+  const missing=[];
+
+  for(const fname of UPLOAD_FILES){
+    const f=byName[fname]||byName[fname.toLowerCase()];
+    if(f){
+      const buf=await f.arrayBuffer();
+      const arr=new Uint8Array(buf);
+      if(arr[0]!==0x50||arr[1]!==0x4B){
+        found[fname]=false;
+        addLog(`✗ ${fname} no es un XLSX válido`,'err');
+      } else {
+        found[fname]=true;
+        fileBuffers[fname]=arr;
+      }
+    } else {
+      found[fname]=null;
+      missing.push(fname);
+    }
+  }
+  updateFileTags(found);
+
+  if(missing.length){
+    setUploadState('error',`Faltan ${missing.length} archivo(s): ${missing.join(', ')}`);
+    return;
+  }
+  if(Object.values(found).some(v=>v===false)){
+    setUploadState('error','Algunos archivos no son XLSX válidos');
+    return;
+  }
+
+  setUploadState('uploading','Subiendo al repo…');
+  const now=new Date();
+  const {week,year}=getISOWeek(now);
+  const weekStr=`Semana ${week} / ${year}`;
+  const dateStr=now.toISOString().slice(0,10);
+  const commitMsg=`Actualización contratos — ${weekStr} (${dateStr})`;
+  let errCount=0;
+
+  for(const fname of UPLOAD_FILES){
+    try{
+      addLog(`Subiendo ${fname}…`,'info');
+      await ghPutFile(`data/contratos/${fname}`,fileBuffers[fname],commitMsg);
+      addLog(`✓ ${fname}`,'ok');
+    }catch(e){
+      addLog(`✗ ${fname}: ${e.message}`,'err');
+      errCount++;
+    }
+  }
+
+  try{
+    const meta={ultima_actualizacion:dateStr,semana:weekStr,archivos:UPLOAD_FILES};
+    const metaBytes=new TextEncoder().encode(JSON.stringify(meta,null,2));
+    await ghPutFile('data/contratos/meta.json',metaBytes,commitMsg);
+    addLog(`✓ meta.json — ${weekStr}`,'ok');
+  }catch(e){
+    addLog(`✗ meta.json: ${e.message}`,'err');
+    errCount++;
+  }
+
+  CONTRATOS_FILES.forEach(f=>{ try{sessionStorage.removeItem(CACHE_VERSION+'_'+BASE_CONT+f);}catch(e){} });
+
+  try{
+    CONTRACTS=[...ALL_CONTRATOS_BASE];
+    const existingNums=new Set(CONTRACTS.map(c=>String(c['Nro contrato'])));
+    const wbsList=UPLOAD_FILES.map(fname=>({nombre:fname,wb:XLSX.read(fileBuffers[fname],{type:'array',raw:true})}));
+    const{contratos,suministros}=parseContratosWorkbooks(wbsList);
+    contratos.forEach(c=>{
+      const nro=String(c['Nro contrato']);
+      if(!existingNums.has(nro)){CONTRACTS.push(c);existingNums.add(nro);}
+      else{
+        const idx=CONTRACTS.findIndex(x=>String(x['Nro contrato'])===nro);
+        if(idx>=0){
+          if(c.tope_anual_mwh)  CONTRACTS[idx].tope_anual_mwh=c.tope_anual_mwh;
+          if(c.precio_usd)      CONTRACTS[idx].precio_usd=c.precio_usd;
+          if(c.precio_display)  CONTRACTS[idx].precio_display=c.precio_display;
+          if(c['TIPO RECURSO']) CONTRACTS[idx]['TIPO RECURSO']=c['TIPO RECURSO'];
+        }
+      }
+    });
+    Object.assign(SUMINISTROS_BY_CONTRACT,suministros);
+    addLog(`✓ Sesión actualizada — ${CONTRACTS.length} contratos`,'ok');
+    setS('K','ok',`${CONTRACTS.length} contratos · ${weekStr}`);
+    refresh();
+  }catch(e){
+    addLog(`✗ Error actualizando sesión: ${e.message}`,'err');
+    errCount++;
+  }
+
+  document.getElementById('uploadLastMeta').textContent=`Última actualización: ${weekStr} — ${dateStr}`;
+
+  if(errCount>0){
+    setUploadState('error',`Completado con ${errCount} error(es) — revisá el log`);
+  } else {
+    setUploadState('done','✓ Archivos subidos y datos actualizados');
+    addLog('✓ Todo OK — repo actualizado','ok');
+  }
+  document.getElementById('uploadInput').value='';
+}
+
+async function ghGetSHA(path){
+  const r=await fetch(`${GH_API}/${path}`,{headers:{Authorization:`token ${GH_TOKEN}`,Accept:'application/vnd.github.v3+json'}});
+  if(r.status===404) return null;
+  if(!r.ok) throw new Error(`SHA ${path}: HTTP ${r.status}`);
+  return (await r.json()).sha||null;
+}
+
+async function ghPutFile(path,uint8arr,message){
+  let bin='';
+  for(let i=0;i<uint8arr.length;i++) bin+=String.fromCharCode(uint8arr[i]);
+  const content=btoa(bin);
+  const sha=await ghGetSHA(path);
+  const body={message,content,branch:'main'};
+  if(sha) body.sha=sha;
+  const r=await fetch(`${GH_API}/${path}`,{method:'PUT',headers:{Authorization:`token ${GH_TOKEN}`,Accept:'application/vnd.github.v3+json','Content-Type':'application/json'},body:JSON.stringify(body)});
+  if(!r.ok){const err=await r.json().catch(()=>({}));throw new Error(err.message||`HTTP ${r.status}`);}
+  return await r.json();
+}
+
+async function loadUploadMeta(){
+  try{
+    const r=await fetch(`${BASE_CONT}meta.json?t=${Date.now()}`);
+    if(r.ok){
+      const m=await r.json();
+      document.getElementById('uploadLastMeta').textContent=`Última actualización: ${m.semana||'—'} — ${m.ultima_actualizacion||'—'}`;
+    } else {
+      document.getElementById('uploadLastMeta').textContent='Sin actualizaciones registradas';
+    }
+  }catch(e){
+    document.getElementById('uploadLastMeta').textContent='Sin actualizaciones registradas';
+  }
+}
+
+loadUploadMeta();
 
 </script>
 </body>
