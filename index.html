@@ -329,6 +329,7 @@ td.mhi { background:rgba(196,56,42,0.07) !important; color:var(--accent) !import
   <div class="filter-sep"></div>
   <span class="filter-label">Contratos</span>
   <button class="filter-btn outline" id="btnFilterContracts" onclick="toggleFilterContracts()">Con contratos</button>
+  <button class="filter-btn outline" id="btnFilterSinContratos" onclick="toggleFilterSinContratos()">Sin contratos</button>
   <div class="month-tag" id="mTag">
     <span id="mTagLbl"></span>
     <button class="clear-tag" onclick="clearMonth()">✕</button>
@@ -409,7 +410,7 @@ td.mhi { background:rgba(196,56,42,0.07) !important; color:var(--accent) !import
     <div class="card-title">Detalle de grandes usuarios</div>
     <div class="table-ctl">
       <span class="card-meta" id="tblMeta"></span>
-      <button class="btn outline" id="btnCols" onclick="toggleCols()">Ocultar meses</button>
+      <button class="btn outline" id="btnCols" onclick="toggleCols()">Mostrar meses</button>
       <button class="btn export" onclick="exportExcel()">↓ Excel</button>
     </div>
   </div>
@@ -561,10 +562,11 @@ let aType  = 'all';
 let aDist  = '';
 let aTerm  = '';
 let aMonth = null;
-let aOnlyContracts = false;
+let aOnlyContracts    = false;
+let aOnlySinContratos = false;
 let sKey   = 'annual';
 let sDir   = -1;
-let showM  = true;
+let showM  = false;
 let CF     = {};
 let selectedNemo = null;
 
@@ -856,6 +858,7 @@ function filtered(){
     if(aType!=='all'&&d.type!==aType) return false;
     if(aDist&&d.dist!==aDist) return false;
     if(aOnlyContracts&&!hasContracts(d.id)) return false;
+    if(aOnlySinContratos&&hasContracts(d.id)) return false;
     if(q&&!d.id.toLowerCase().includes(q)&&!d.name.toLowerCase().includes(q)) return false;
     if(CF.name&&!d.name.toLowerCase().includes(CF.name)) return false;
     if(CF.nemo&&!d.id.toLowerCase().includes(CF.nemo)) return false;
@@ -871,7 +874,16 @@ function filtered(){
 function setType(t){ aType=t; syncFilterUI(); refresh(); }
 function toggleFilterContracts(){
   aOnlyContracts=!aOnlyContracts;
+  if(aOnlyContracts) aOnlySinContratos=false;
   document.getElementById('btnFilterContracts').classList.toggle('active',aOnlyContracts);
+  document.getElementById('btnFilterSinContratos').classList.remove('active');
+  refresh();
+}
+function toggleFilterSinContratos(){
+  aOnlySinContratos=!aOnlySinContratos;
+  if(aOnlySinContratos) aOnlyContracts=false;
+  document.getElementById('btnFilterSinContratos').classList.toggle('active',aOnlySinContratos);
+  document.getElementById('btnFilterContracts').classList.remove('active');
   refresh();
 }
 function toggleMonth(mi){
