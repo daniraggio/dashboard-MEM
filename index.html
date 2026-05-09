@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Dashboard MEM — Consumo & Contratos v4</title>
+<title>Dashboard MEM — Consumo & Contratos v7</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Bricolage+Grotesque:wght@400;600;800&display=swap" rel="stylesheet">
@@ -11,7 +11,7 @@
 <!--
 ================================================================================
 DASHBOARD MEM UNIFICADO — DOCUMENTACIÓN INTERNA (solo para Claude)
-Versión: 4
+Versión: 7
 Repositorio: daniraggio/dashboard-MEM
 URL: https://daniraggio.github.io/dashboard-MEM/
 ================================================================================
@@ -28,36 +28,43 @@ Unificación autónoma de consumos y contratos. Todos los datos viven en este mi
 
 ## ESTRUCTURA DE DATOS
   - ALL[]:           GUs de consumo. Campos: id, name, type, dist, monthly[12], annual
-  - CONTRACTS[]:     Contratos cargados. Campos iguales a ALL[] de index_v26.
-                     Fuentes: (1) ALL_CONTRATOS_BASE embebido, (2) XLSX del repo, (3) contratos_nuevos.json
-  - CUIT_NAMES{}:    CUIT → Nombre del vendedor. Desde datos embebidos de index_v26.
-  - SUMINISTROS_BY_CONTRACT{}: Nro contrato → [NEMOs]. Desde SUMINISTROS.xlsx del repo de contratos.
+  - CONTRACTS[]:     Contratos. Campos clave: 'Nro contrato', 'Vendedor', 'Suministro / grupo dem.',
+                     'Conj. Generador', 'TIPO RECURSO', 'Tipo contrato', inicio_str, fin_str,
+                     tope_anual_mwh, precio_usd, precio_display.
+                     Fuentes: (1) ALL_CONTRATOS_BASE embebido, (2) XLSX /data/contratos/, (3) contratos_nuevos.json
+  - CUIT_NAMES{}:    CUIT → Nombre del vendedor.
+  - SUMINISTROS_BY_CONTRACT{}: Nro contrato → [NEMOs]. Desde SUMINISTROS.xlsx.
 
 ## LÓGICA DE INTEGRACIÓN GU ↔ CONTRATO
-  1. Contratos directos: CONTRACTS[i]['Suministro / grupo dem.'] === GU.id (NEMO)
+  1. Contratos directos: extractNemoFromSuministro(c['Suministro / grupo dem.']) === GU.id
+     El campo puede venir como "(NEMO) Descripción" o directamente "NEMO".
+     extractNemoFromSuministro() extrae el NEMO del paréntesis si lo hay.
   2. Contratos grupales: GU.id aparece en SUMINISTROS_BY_CONTRACT[nroContrato]
-  El badge en la tabla muestra cantidad. Click → panel lateral.
+  El badge en la tabla muestra cantidad + volumen vigente. Click → panel lateral.
 
-## CARGA DE DATOS DE CONTRATOS
-  Secuencia al iniciar:
-  1. ALL_CONTRATOS_BASE (embebido en este HTML — copiar de index_v26 vigente)
-  2. XLSX del repo daniraggio/dashboard-energia/data/ (CONTRATOS, TOPES, SUMINISTROS)
-     → enriquece/agrega contratos con datos frescos, actualiza SUMINISTROS_BY_CONTRACT
-  3. contratos_nuevos.json (lectura pública, sin token)
-     → suma contratos agregados manualmente al dashboard-energia
+## VIGENCIA DE CONTRATOS
+  Un contrato es vigente si: inicio_str <= hoy <= fin_str (comparación de fecha ISO YYYY-MM-DD).
+  volumenVigente(nemo) suma tope_anual_mwh de los contratos vigentes del GU.
+
+## PERFORMANCE
+  - Cache sessionStorage: XLSX y JSON se guardan comprimidos (base64) en sessionStorage.
+    Clave: "mem_cache_v1_{url_hash}". En recarga de página, se usan los datos cacheados.
+  - Renderizado virtual en tabla: solo se renderizan las filas visibles + buffer.
+    ROW_H = altura de fila en px. VIS_ROWS = filas visibles. BUFFER = filas extra arriba/abajo.
 
 ## REGLAS PARA CLAUDE AL EDITAR
-  1. VERSIÓN: incrementar en: este comentario, <title>, versionBadge.
-  2. DATOS BASE: ALL_CONTRATOS_BASE y CUIT_NAMES se actualizan copiando de index_v26.
-  3. No hay lógica de escritura a GitHub (este dashboard es solo lectura).
-  4. Los archivos XLSX del repo de contratos se leen desde:
-     https://raw.githubusercontent.com/daniraggio/dashboard-energia/main/data/
+  1. VERSIÓN: incrementar en: este comentario (Versión:), <title>, versionBadge innerHTML.
+  2. No hay lógica de escritura a GitHub (este dashboard es solo lectura).
+  3. Los XLSX se cachean en sessionStorage; cambiar CACHE_VERSION invalida el cache.
 
 ## HISTORIAL
 v1: Dashboard unificado inicial (carga básica desde contratos_nuevos.json)
 v4: Dashboard autónomo — todos los datos en daniraggio/dashboard-MEM;
-    /data/consumos/ y /data/contratos/; eliminados inputs de repo (hardcodeado);
-    contratos_nuevos.json movido a /data/contratos/
+    /data/consumos/ y /data/contratos/; eliminados inputs de repo; hardcodeado
+v5: Meses ocultos por defecto; filtro "Sin contratos"; fix matching NEMO con paréntesis
+v6: (numeración corregida en conversación)
+v7: Volumen vigente en badge de contratos; cache sessionStorage para XLSX;
+    renderizado virtual en tabla
 ================================================================================
 -->
 
@@ -217,7 +224,7 @@ tbody td.td-name { text-align:left; font-family:'Bricolage Grotesque',sans-serif
 tbody td.td-nemo { text-align:left; font-size:11px; color:var(--ink3); }
 tbody td.td-type { text-align:left; }
 tbody td.td-dist { text-align:left; font-size:11px; color:var(--ink2); max-width:160px; overflow:hidden; text-overflow:ellipsis; }
-tbody td.td-contracts { text-align:left; width:90px; }
+tbody td.td-contracts { text-align:left; width:140px; }
 td.ann { font-weight:500; color:var(--ink) !important; }
 td.mhi { background:rgba(196,56,42,0.07) !important; color:var(--accent) !important; font-weight:500; }
 .type-badge { display:inline-block; padding:1px 7px; border-radius:3px; font-size:10px; font-family:'DM Mono',monospace; letter-spacing:1px; }
@@ -228,10 +235,12 @@ td.mhi { background:rgba(196,56,42,0.07) !important; color:var(--accent) !import
 .contract-badge:hover { background:var(--blue); color:#fff; }
 .contract-badge.grouped { background:#f0e6ff; color:#5c2d9c; border-color:rgba(92,45,156,0.2); }
 .contract-badge.grouped:hover { background:#5c2d9c; color:#fff; }
+.badge-vol { font-size:9px; opacity:0.72; margin-left:1px; }
 .no-contract { font-family:'DM Mono',monospace; font-size:10px; color:var(--ink3); }
 .col-resizer { position:absolute; right:0; top:0; bottom:0; width:5px; cursor:col-resize; user-select:none; z-index:3; }
 .col-resizer:hover,.col-resizer.dragging { background:var(--accent); opacity:.5; }
 .empty { text-align:center; padding:48px; font-family:'DM Mono',monospace; font-size:13px; color:var(--ink3); }
+tr.vt-pad td { padding:0; border:none; background:transparent; }
 .tbl-filter-bar { display:flex; align-items:center; gap:8px; flex-wrap:wrap; padding:12px 0 14px; border-bottom:1px solid var(--border); margin-bottom:14px; }
 .tbl-filter-bar .filter-label { font-family:'DM Mono',monospace; font-size:10px; letter-spacing:2px; text-transform:uppercase; color:var(--ink3); }
 .tbl-filter-bar .filter-btn { padding:5px 12px; font-size:11px; }
@@ -295,7 +304,7 @@ td.mhi { background:rgba(196,56,42,0.07) !important; color:var(--accent) !import
   <div>
     <div class="eyebrow">
       Sistema de Análisis Energético — MEM
-      <span class="version-badge">v4 UNIFICADO</span>
+      <span class="version-badge">v7 UNIFICADO</span>
     </div>
     <h1>Grandes Usuarios<br><span>&amp; Contratos</span></h1>
   </div>
@@ -427,7 +436,7 @@ td.mhi { background:rgba(196,56,42,0.07) !important; color:var(--accent) !import
       <input type="text" id="tblSearch" placeholder="Buscar…" oninput="setTermTbl(this.value)">
     </div>
   </div>
-  <div class="table-wrap">
+  <div class="table-wrap" id="tableWrap">
     <table id="tbl">
       <thead>
         <tr class="sort-row" id="sortRow">
@@ -858,6 +867,18 @@ function countContracts(nemo){ return CONTRACTS.length?getContractsByNemo(nemo).
 function hasContracts(nemo)  { return countContracts(nemo)>0; }
 function isGrupalMember(nemo){ return CONTRACTS.length?getContractsByNemo(nemo).grupales.length>0:false; }
 
+const _TODAY = new Date().toISOString().slice(0,10); // YYYY-MM-DD, fijo en sesión
+function volumenVigente(nemo){
+  if(!CONTRACTS.length) return 0;
+  const {all} = getContractsByNemo(nemo);
+  return all.reduce((s,c)=>{
+    const ini = c.inicio_str||'';
+    const fin = c.fin_str||'';
+    const vigente = (!ini||ini<=_TODAY) && (!fin||fin>=_TODAY);
+    return s + (vigente && c.tope_anual_mwh ? c.tope_anual_mwh : 0);
+  },0);
+}
+
 // ════════════════════════════════════════════════════════════════════════════════
 // FILTERING & SORTING (consumos)
 // ════════════════════════════════════════════════════════════════════════════════
@@ -954,33 +975,68 @@ function updStats(data){
   if(mx?.id){set('stMaxV',fmtS(mx.annual));set('stMaxN',mx.name);}
 }
 
-function updTable(data){
-  const rows=sortedData(data);
-  const tb=document.getElementById('tBody');
-  if(!rows.length){ tb.innerHTML=`<tr><td colspan="18" class="empty">Sin resultados</td></tr>`; set('tblMeta','0 clientes'); applyColVis(); return; }
-  set('tblMeta',rows.length+' clientes');
-  tb.innerHTML=rows.map(d=>{
-    const mCells=d.monthly.map((v,i)=>`<td class="col-m${i===aMonth?' mhi':''}">${v!=null?fmt(v):'—'}</td>`).join('');
-    const cnt=countContracts(d.id);
-    const grupal=isGrupalMember(d.id);
-    let contractCell;
-    if(cnt>0){
-      const cls=grupal?'grouped':'';
-      const icon=grupal?'⋯':'◉';
-      contractCell=`<td class="td-contracts"><span class="contract-badge ${cls}" onclick="openPanel(event,'${d.id}')" title="${grupal?'Incluido en demanda grupal · '+cnt+' contrato(s)':cnt+' contrato(s) directo(s)'}">${icon} ${cnt}</span></td>`;
-    } else {
-      contractCell=`<td class="td-contracts"><span class="no-contract">—</span></td>`;
-    }
-    return`<tr class="${selectedNemo===d.id?'selected':''}" onclick="rowSelect(event,'${d.id}')">
-      <td class="td-name" title="${d.name}">${d.name}</td>
-      <td class="td-nemo">${d.id}</td>
-      <td class="td-type"><span class="type-badge badge-${d.type}">${d.type}</span></td>
-      <td class="td-dist" title="${d.dist}">${d.dist||'—'}</td>
-      ${contractCell}${mCells}
-      <td class="ann">${fmt(d.annual)}</td>
-    </tr>`;
-  }).join('');
+// ════════════════════════════════════════════════════════════════════════════════
+// VIRTUAL TABLE RENDERING
+// ════════════════════════════════════════════════════════════════════════════════
+const ROW_H  = 41;   // altura de fila en px (ajustar si cambia el padding)
+const BUFFER = 10;   // filas extra arriba y abajo del viewport visible
+let _vtRows  = [];   // dataset completo ordenado para la tabla
+let _vtStart = 0;    // primer índice renderizado
+
+function buildRowHtml(d){
+  const mCells = d.monthly.map((v,i)=>`<td class="col-m${i===aMonth?' mhi':''}">${v!=null?fmt(v):'—'}</td>`).join('');
+  const cnt    = countContracts(d.id);
+  const grupal = isGrupalMember(d.id);
+  let contractCell;
+  if(cnt>0){
+    const cls    = grupal?'grouped':'';
+    const icon   = grupal?'⋯':'◉';
+    const vol    = volumenVigente(d.id);
+    const volStr = vol>0?` · ${fmtMwh(vol)}`:'';
+    const title  = grupal
+      ? `Incluido en demanda grupal · ${cnt} contrato(s)${volStr}`
+      : `${cnt} contrato(s) directo(s)${volStr}`;
+    contractCell = `<td class="td-contracts"><span class="contract-badge ${cls}" onclick="openPanel(event,'${d.id}')" title="${title}">${icon} ${cnt}${vol>0?`<span class="badge-vol">${fmtMwh(vol)}</span>`:''}</span></td>`;
+  } else {
+    contractCell = `<td class="td-contracts"><span class="no-contract">—</span></td>`;
+  }
+  return `<tr class="${selectedNemo===d.id?'selected':''}" onclick="rowSelect(event,'${d.id}')">
+    <td class="td-name" title="${d.name}">${d.name}</td>
+    <td class="td-nemo">${d.id}</td>
+    <td class="td-type"><span class="type-badge badge-${d.type}">${d.type}</span></td>
+    <td class="td-dist" title="${d.dist}">${d.dist||'—'}</td>
+    ${contractCell}${mCells}
+    <td class="ann">${fmt(d.annual)}</td>
+  </tr>`;
+}
+
+function vtRender(scrollTop){
+  const tb       = document.getElementById('tBody');
+  const total    = _vtRows.length;
+  if(!total){ tb.innerHTML=`<tr><td colspan="18" class="empty">Sin resultados</td></tr>`; return; }
+
+  const visCount = Math.ceil(520/ROW_H);           // filas visibles en 520px
+  const start    = Math.max(0, Math.floor(scrollTop/ROW_H) - BUFFER);
+  const end      = Math.min(total, start + visCount + BUFFER*2);
+  _vtStart       = start;
+
+  const padTop   = start * ROW_H;
+  const padBot   = (total - end) * ROW_H;
+
+  let html = '';
+  if(padTop>0)  html += `<tr class="vt-pad" style="height:${padTop}px"><td colspan="18"></td></tr>`;
+  for(let i=start;i<end;i++) html += buildRowHtml(_vtRows[i]);
+  if(padBot>0)  html += `<tr class="vt-pad" style="height:${padBot}px"><td colspan="18"></td></tr>`;
+
+  tb.innerHTML = html;
   applyColVis();
+}
+
+function updTable(data){
+  _vtRows = sortedData(data);
+  set('tblMeta', _vtRows.length+' clientes');
+  const wrap = document.getElementById('tableWrap');
+  vtRender(wrap ? wrap.scrollTop : 0);
 }
 
 function rowSelect(e,nemo){
@@ -1159,10 +1215,31 @@ function setS(which,type,msg){
   set('sTxt'+which,msg);
 }
 
+const CACHE_VERSION = 'mem_cache_v1';
+
 async function getXlsx(url){
-  const r=await fetch(url);
+  const key = CACHE_VERSION + '_' + url;
+  try {
+    const cached = sessionStorage.getItem(key);
+    if(cached){
+      const bin = atob(cached);
+      const arr = new Uint8Array(bin.length);
+      for(let i=0;i<bin.length;i++) arr[i]=bin.charCodeAt(i);
+      return arr;
+    }
+  } catch(e){ /* sessionStorage lleno o bloqueado */ }
+
+  const r = await fetch(url);
   if(!r.ok) throw new Error('HTTP '+r.status);
-  return new Uint8Array(await r.arrayBuffer());
+  const arr = new Uint8Array(await r.arrayBuffer());
+
+  try {
+    let bin = '';
+    for(let i=0;i<arr.length;i++) bin += String.fromCharCode(arr[i]);
+    sessionStorage.setItem(key, btoa(bin));
+  } catch(e){ /* quota exceeded, ignorar */ }
+
+  return arr;
 }
 
 function populateDistFilter(){
@@ -1220,6 +1297,7 @@ function initColResize(){
 document.getElementById('searchInput').addEventListener('input',e=>{aTerm=e.target.value;syncFilterUI();refresh();});
 document.querySelectorAll('.filter-btn[data-type]').forEach(b=>b.addEventListener('click',()=>setType(b.dataset.type)));
 document.addEventListener('keydown',e=>{if(e.key==='Escape')closePanel();});
+document.getElementById('tableWrap').addEventListener('scroll',function(){ vtRender(this.scrollTop); }, {passive:true});
 
 // ── BOOT ─────────────────────────────────────────────────────────────────────
 initCharts();
