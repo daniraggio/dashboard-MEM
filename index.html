@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Dashboard MEM — Consumo & Contratos v8</title>
+<title>Dashboard MEM — Consumo & Contratos v9</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Bricolage+Grotesque:wght@400;600;800&display=swap" rel="stylesheet">
@@ -11,7 +11,7 @@
 <!--
 ================================================================================
 DASHBOARD MEM UNIFICADO — DOCUMENTACIÓN INTERNA (solo para Claude)
-Versión: 8
+Versión: 9
 Repositorio: daniraggio/dashboard-MEM
 URL: https://daniraggio.github.io/dashboard-MEM/
 ================================================================================
@@ -331,7 +331,7 @@ tr.vt-pad td { padding:0; border:none; background:transparent; }
   <div>
     <div class="eyebrow">
       Sistema de Análisis Energético — MEM
-      <span class="version-badge">v8 UNIFICADO</span>
+      <span class="version-badge">v9 UNIFICADO</span>
     </div>
     <h1>Grandes Usuarios<br><span>&amp; Contratos</span></h1>
   </div>
@@ -792,7 +792,7 @@ async function loadContratos(){
 function parseContratosWorkbooks(wbsList){
   const norm = s => String(s).normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/\s+/g,' ').trim();
 
-  let contratoRows=[], topeRows=[], suministroRows=[];
+  let contratoRows=[], topeRows=[], suministroRows=[], parametrosRows=[], caracteristicasRows=[];
 
   wbsList.forEach(({nombre,wb})=>{
     const sheet=wb.Sheets[wb.SheetNames[0]];
@@ -801,17 +801,23 @@ function parseContratosWorkbooks(wbsList){
     const headers=Object.keys(json[0]);
     const nh=headers.map(norm);
 
-    const hasTope        = nh.some(h=>h.includes('tope')&&h.includes('anual'));
-    const hasNroContrato = nh.some(h=>h.includes('nro')&&h.includes('contrato'));
-    const hasSuministro  = nh.some(h=>h.includes('suministro'));
-    const hasVendedor    = nh.some(h=>h==='vendedor');
-    const hasTipoContrato= nh.some(h=>h.includes('tipo')&&h.includes('contrato'));
-    const hasConj        = nh.some(h=>h.includes('conj')||(h.includes('conjunto')&&h.includes('generador')));
-    const esContratos    = hasNroContrato&&hasSuministro&&(hasVendedor||hasTipoContrato||hasConj);
+    const hasTope          = nh.some(h=>h.includes('tope')&&h.includes('anual'));
+    const hasNroContrato   = nh.some(h=>h.includes('nro')&&h.includes('contrato'));
+    const hasSuministro    = nh.some(h=>h.includes('suministro'));
+    const hasVendedor      = nh.some(h=>h==='vendedor');
+    const hasTipoContrato  = nh.some(h=>h.includes('tipo')&&h.includes('contrato'));
+    const hasConj          = nh.some(h=>h.includes('conj')||(h.includes('conjunto')&&h.includes('generador')));
+    const hasParametro     = nh.some(h=>h.includes('parametro')||h.includes('parámetro')||h.includes('parametro'));
+    const hasCaracteristica= nh.some(h=>h.includes('caracteristica')||h.includes('característica'));
+    const hasValor         = nh.some(h=>h==='valor');
+    const esContratos      = hasNroContrato&&hasSuministro&&(hasVendedor||hasTipoContrato||hasConj);
+    const esParametros     = hasNroContrato&&hasParametro&&hasValor&&!esContratos;
+    const esCaracteristicas= hasNroContrato&&hasCaracteristica&&hasValor&&!esContratos;
 
-    if(esContratos)   contratoRows=json;
-    else if(hasTope)  topeRows=json;
-    // SUMINISTROS: tiene "suministro" con NEMOs entre paréntesis pero NO es tabla de contratos
+    if(esContratos)          contratoRows=json;
+    else if(hasTope)         topeRows=json;
+    else if(esParametros)    parametrosRows=json;
+    else if(esCaracteristicas) caracteristicasRows=json;
     else if(hasSuministro&&!esContratos) suministroRows=json;
   });
 
@@ -846,12 +852,63 @@ function parseContratosWorkbooks(wbsList){
     if(!suministros[nro].includes(nemo)) suministros[nro].push(nemo);
   });
 
+  // Construir parametrosMap desde PARAMETROS_VARIABLES
+  // nro → { precio_usd, precio_display }
+  const parametrosMap={};
+  parametrosRows.forEach(r=>{
+    const keys=Object.keys(r);
+    const findKey=(...cands)=>{for(const c of cands){const f=keys.find(k=>norm(k)===norm(c));if(f)return f;}return null;};
+    const nroKey  =findKey('Nro contrato','Contrato','nro_contrato');
+    const paramKey=findKey('Parámetro','Parametro','parametro','parámetro');
+    const valorKey=findKey('Valor','valor');
+    if(!nroKey||!paramKey||!valorKey) return;
+    const nro  =String(r[nroKey]||'').trim();
+    const param=norm(String(r[paramKey]||''));
+    const valor=String(r[valorKey]||'').trim();
+    if(!nro||!param||!valor) return;
+    if(!parametrosMap[nro]) parametrosMap[nro]={};
+    // Precio: detectar cualquier parámetro que contenga "precio"
+    if(param.includes('precio')){
+      // Intentar extraer número del valor (ej: "63 U$S/MWh" → 63)
+      const num=parseFloat(String(valor).replace(',','.'));
+      if(!isNaN(num)){
+        parametrosMap[nro].precio_usd=num;
+        parametrosMap[nro].precio_display=valor;
+      }
+    }
+  });
+
+  // Construir caracteristicasMap desde CARACTERISTICAS
+  // Suma los valores mensuales de "Tope mensual MWh" → tope_anual_mwh
+  caracteristicasRows.forEach(r=>{
+    const keys=Object.keys(r);
+    const findKey=(...cands)=>{for(const c of cands){const f=keys.find(k=>norm(k)===norm(c));if(f)return f;}return null;};
+    const nroKey   =findKey('Nro contrato','Contrato','nro_contrato');
+    const caracKey =findKey('Característica','Caracteristica','caracteristica','característica');
+    const valorKey =findKey('Valor','valor');
+    if(!nroKey||!caracKey||!valorKey) return;
+    const nro  =String(r[nroKey]||'').trim();
+    const carac=norm(String(r[caracKey]||''));
+    const valor=String(r[valorKey]||'').trim();
+    if(!nro||!carac||!valor) return;
+    // Tope mensual MWh: "ENE:330; FEB:330; ..." → sumar todos los valores
+    if(carac.includes('tope')&&carac.includes('mensual')){
+      const nums=[...valor.matchAll(/[\w]+\s*:\s*([\d.,]+)/g)].map(m=>parseFloat(m[1].replace(',','.')));
+      const suma=nums.reduce((a,b)=>a+(isNaN(b)?0:b),0);
+      if(suma>0){
+        // Solo sobrescribir topeMap si no existe ya un valor de TOPES.xlsx
+        const nroNorm=nro.replace(/^0+/,'');
+        if(!topeMap[nro]&&!topeMap[nroNorm]) topeMap[nro]=suma;
+      }
+    }
+  });
+
   // Normalizar contratos
-  const contratos=contratoRows.map(r=>normalizeContratoRow(r,topeMap)).filter(c=>c['Nro contrato']);
+  const contratos=contratoRows.map(r=>normalizeContratoRow(r,topeMap,parametrosMap)).filter(c=>c['Nro contrato']);
   return{contratos, suministros};
 }
 
-function normalizeContratoRow(row, topeMap){
+function normalizeContratoRow(row, topeMap, parametrosMap={}){
   const keys=Object.keys(row);
   const norm=s=>String(s).normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/\s+/g,' ').trim();
   const get=(...cands)=>{
@@ -864,6 +921,7 @@ function normalizeContratoRow(row, topeMap){
   const finDate   =parseExcelDate(get('Fin','fin','FIN','fecha_fin','fin_str'));
   const nroNorm=nro.replace(/^0+/,'');
   const tope=topeMap&&(topeMap[nro]||topeMap[nroNorm])||null;
+  const params=parametrosMap[nro]||parametrosMap[nroNorm]||{};
   return{
     'Nro contrato':           nro,
     'Vendedor':               get('Vendedor','vendedor','VENDEDOR'),
@@ -872,10 +930,11 @@ function normalizeContratoRow(row, topeMap){
     'TIPO RECURSO':           get('TIPO RECURSO','Tipo recurso','tipo_recurso')||'',
     'inicio_str':             dateToStr(inicioDate),
     'fin_str':                dateToStr(finDate),
-    'precio_usd':             null,
-    'precio_display':         null,
+    'precio_usd':             params.precio_usd||null,
+    'precio_display':         params.precio_display||null,
     'Tipo contrato':          get('Tipo contrato','tipo_contrato','TipoContrato'),
     'tope_anual_mwh':         tope,
+    'tope_proporcional':      params.tope_proporcional||false,
   };
 }
 
@@ -932,7 +991,7 @@ function volumenVigente(nemo){
     const ini = c.inicio_str||'';
     const fin = c.fin_str||'';
     const vigente = (!ini||ini<=_TODAY) && (!fin||fin>=_TODAY);
-    return s + (vigente && c.tope_anual_mwh ? c.tope_anual_mwh : 0);
+    return s + (vigente && c.tope_anual_mwh && !c.tope_proporcional ? c.tope_anual_mwh : 0);
   },0);
 }
 
@@ -1173,7 +1232,9 @@ function renderContractCard(c,highlightNemo,isGrupalMember){
     }
   }
 
-  const volStr=c.tope_anual_mwh!=null?fmtMwh(c.tope_anual_mwh)+'/año':'—';
+  const volStr=c.tope_proporcional
+    ? '<span style="font-size:10px;color:var(--amber);font-style:italic">Proporcional</span>'
+    : c.tope_anual_mwh!=null?fmtMwh(c.tope_anual_mwh)+'/año':'—';
   const mLabel=c.n_meses&&c.n_meses<12?` <span style="font-size:9px;color:var(--blue-text);background:var(--blue-bg);border-radius:3px;padding:0 3px">(${c.n_meses}m)</span>`:'';
 
   return`<div class="contract-card">
