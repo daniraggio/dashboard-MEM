@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Dashboard MEM — Consumo & Contratos v3</title>
+<title>Dashboard MEM — Consumo & Contratos v4</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Bricolage+Grotesque:wght@400;600;800&display=swap" rel="stylesheet">
@@ -11,21 +11,20 @@
 <!--
 ================================================================================
 DASHBOARD MEM UNIFICADO — DOCUMENTACIÓN INTERNA (solo para Claude)
-Versión: 3
+Versión: 4
 Repositorio: daniraggio/dashboard-MEM
 URL: https://daniraggio.github.io/dashboard-MEM/
 ================================================================================
 
 ## QUÉ ES ESTE DASHBOARD
-Unificación de:
-  - dashboard-clientes (index_v5): consumos de GUs, datos via XLSX desde GitHub
-  - dashboard-energia  (index_v26): contratos de energía, datos embebidos + JSON + XLSX desde GitHub
+Unificación autónoma de consumos y contratos. Todos los datos viven en este mismo repo:
+  - Consumos:   daniraggio/dashboard-MEM → /data/consumos/{GUDI,GUMAs,GUMEs,Lista}.xlsx
+  - Contratos:  daniraggio/dashboard-MEM → /data/contratos/{CONTRATOS,TOPES,SUMINISTROS,
+                                            PARAMETROS_VARIABLES,CARACTERISTICAS}.xlsx
+                                         → /data/contratos/contratos_nuevos.json
 
 ## REPOSITORIOS VINCULADOS
-  - Consumos:   daniraggio/dashboard-clientes  → /data/{GUDI,GUMAs,GUMEs,Lista}.xlsx
-  - Contratos:  daniraggio/dashboard-energia   → /data/{CONTRATOS,TOPES,SUMINISTROS,PARAMETROS_VARIABLES,CARACTERISTICAS}.xlsx
-                                               → contratos_nuevos.json (en la raíz)
-                                               → Datos embebidos en index_v26 (copiados aquí como ALL_CONTRATOS_BASE)
+  - Todo en: daniraggio/dashboard-MEM
 
 ## ESTRUCTURA DE DATOS
   - ALL[]:           GUs de consumo. Campos: id, name, type, dist, monthly[12], annual
@@ -56,8 +55,9 @@ Unificación de:
 
 ## HISTORIAL
 v1: Dashboard unificado inicial (carga básica desde contratos_nuevos.json)
-v3: Repo de contratos precargado por defecto; mejor feedback de errores en carga de contratos;
-    intento de carga de contratos_nuevos.json aunque fallen los XLSX; logs de diagnóstico en consola
+v4: Dashboard autónomo — todos los datos en daniraggio/dashboard-MEM;
+    /data/consumos/ y /data/contratos/; eliminados inputs de repo (hardcodeado);
+    contratos_nuevos.json movido a /data/contratos/
 ================================================================================
 -->
 
@@ -295,26 +295,19 @@ td.mhi { background:rgba(196,56,42,0.07) !important; color:var(--accent) !import
   <div>
     <div class="eyebrow">
       Sistema de Análisis Energético — MEM
-      <span class="version-badge">v3 UNIFICADO</span>
+      <span class="version-badge">v4 UNIFICADO</span>
     </div>
     <h1>Grandes Usuarios<br><span>&amp; Contratos</span></h1>
   </div>
   <div class="header-right">
-    <!-- Repo consumos -->
-    <div class="repo-row">
-      <span class="repo-label">Consumos</span>
-      <input type="text" id="repoConsumos" value="daniraggio/dashboard-clientes" placeholder="usuario/repo consumos">
-      <button class="btn" id="btnLoad" onclick="loadConsumos()">⟳ Cargar</button>
+    <!-- Estado de carga -->
+    <div class="status-row">
       <span class="status-dot" id="sDotC"></span>
-      <span class="status-txt" id="sTxtC">Sin conectar</span>
-    </div>
-    <!-- Repo contratos -->
-    <div class="repo-row">
-      <span class="repo-label">Contratos</span>
-      <input type="text" id="repoContratos" value="daniraggio/dashboard-energia" placeholder="usuario/repo contratos">
-      <button class="btn outline" id="btnLoadContratos" onclick="loadContratos()">⟳ Sincronizar</button>
+      <span class="status-txt" id="sTxtC">Cargando consumos…</span>
+      <span style="color:var(--border);margin:0 4px">|</span>
       <span class="status-dot" id="sDotK"></span>
-      <span class="status-txt" id="sTxtK">Sin sincronizar</span>
+      <span class="status-txt" id="sTxtK">Cargando contratos…</span>
+      <button class="btn outline" style="margin-left:8px" onclick="loadAll()" title="Recargar datos">⟳</button>
     </div>
     <div class="search-box">
       <span class="search-icon">⌕</span>
@@ -540,6 +533,11 @@ const MO   = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov',
 const TC   = { GUMA:'#c4382a', GUME:'#1e6b45', GUDI:'#1a3a6e' };
 const TBG  = { GUMA:'rgba(196,56,42,0.7)', GUME:'rgba(30,107,69,0.7)', GUDI:'rgba(26,58,110,0.7)' };
 const GRID = '#ede9e0';
+const REPO       = 'daniraggio/dashboard-MEM';
+const BASE_RAW   = `https://raw.githubusercontent.com/${REPO}/main`;
+const BASE_CONS  = `${BASE_RAW}/data/consumos/`;
+const BASE_CONT  = `${BASE_RAW}/data/contratos/`;
+
 const DATA_FILES = [
   { file:'GUDI.xlsx',  type:'GUDI' },
   { file:'GUMAs.xlsx', type:'GUMA' },
@@ -594,15 +592,11 @@ function initCharts(){
 // CARGA DE CONSUMOS (repo dashboard-clientes)
 // ════════════════════════════════════════════════════════════════════════════════
 async function loadConsumos(){
-  const repo = document.getElementById('repoConsumos').value.trim();
-  if(!repo){ setS('C','err','Ingresá usuario/repositorio'); return; }
-  document.getElementById('btnLoad').disabled=true;
   setS('C','loading','Cargando consumos…');
-  const base=`https://raw.githubusercontent.com/${repo}/main/data/`;
   ALL=[];
   try{
     try{
-      const buf=await getXlsx(base+'Lista.xlsx');
+      const buf=await getXlsx(BASE_CONS+'Lista.xlsx');
       const wb=XLSX.read(buf,{type:'array'});
       XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{header:1}).forEach(r=>{
         if(r[0]&&r[1]&&r[0]!=='NEMO') NAMES[String(r[0]).trim()]=String(r[1]).trim();
@@ -610,15 +604,14 @@ async function loadConsumos(){
     }catch{}
     let ok=0;
     for(const {file,type} of DATA_FILES){
-      try{ ALL.push(...parseConsumosFile(await getXlsx(base+file),type)); ok++; }
-      catch(e){ console.warn(file,e); }
+      try{ ALL.push(...parseConsumosFile(await getXlsx(BASE_CONS+file),type)); ok++; }
+      catch(e){ console.warn('[Consumos]',file,e); }
     }
-    if(!ok) throw new Error('Sin archivos');
+    if(!ok) throw new Error('Sin archivos de consumo');
     setS('C','ok',`${ALL.length} clientes · ${ok}/3 archivos`);
     populateDistFilter();
     refresh();
   }catch(e){ setS('C','err','Error: '+e.message); }
-  document.getElementById('btnLoad').disabled=false;
 }
 
 function parseConsumosFile(buf,type){
@@ -640,30 +633,24 @@ function parseConsumosFile(buf,type){
 // Secuencia: (1) datos base embebidos, (2) XLSX del repo, (3) contratos_nuevos.json
 // ════════════════════════════════════════════════════════════════════════════════
 async function loadContratos(){
-  const repo = document.getElementById('repoContratos').value.trim();
-  if(!repo){ setS('K','err','Ingresá repo de contratos'); return; }
-  document.getElementById('btnLoadContratos').disabled=true;
+  document.getElementById('btnLoadContratos')||0; // no-op, botón ya no existe como antes
   setS('K','loading','Conectando con repo…');
 
-  // 1. Partir desde los datos base embebidos
   CONTRACTS = [...ALL_CONTRATOS_BASE];
   const existingNums = new Set(CONTRACTS.map(c=>String(c['Nro contrato'])));
   let xlsxLoaded = 0;
   let jsonAdded  = 0;
   const errores  = [];
 
-  // 2. Intentar XLSX del repo de contratos
+  // 1. XLSX de /data/contratos/
   try{
-    const base=`https://raw.githubusercontent.com/${repo}/main/data/`;
     setS('K','loading','Cargando archivos XLSX…');
-
     const fetchResults = await Promise.allSettled(
-      CONTRATOS_FILES.map(f=>getXlsx(base+f).then(buf=>{
+      CONTRATOS_FILES.map(f=>getXlsx(BASE_CONT+f).then(buf=>{
         const wb=XLSX.read(buf,{type:'array',raw:true});
         return{nombre:f,wb};
       }))
     );
-
     fetchResults.forEach((r,i)=>{
       if(r.status==='rejected'){
         const msg=`${CONTRATOS_FILES[i]}: ${r.reason?.message||r.reason}`;
@@ -671,28 +658,25 @@ async function loadContratos(){
         console.warn('[Contratos] XLSX no cargado →',msg);
       }
     });
-
     const wbsList = fetchResults.filter(r=>r.status==='fulfilled').map(r=>r.value);
     xlsxLoaded = wbsList.length;
-
     if(wbsList.length){
       const {contratos, suministros} = parseContratosWorkbooks(wbsList);
       contratos.forEach(c=>{
         const nro=String(c['Nro contrato']);
-        if(!existingNums.has(nro)){
-          CONTRACTS.push(c); existingNums.add(nro);
-        } else {
+        if(!existingNums.has(nro)){ CONTRACTS.push(c); existingNums.add(nro); }
+        else{
           const idx=CONTRACTS.findIndex(x=>String(x['Nro contrato'])===nro);
           if(idx>=0){
-            if(c.tope_anual_mwh)   CONTRACTS[idx].tope_anual_mwh = c.tope_anual_mwh;
-            if(c.precio_usd)       CONTRACTS[idx].precio_usd     = c.precio_usd;
-            if(c.precio_display)   CONTRACTS[idx].precio_display  = c.precio_display;
-            if(c['TIPO RECURSO'])  CONTRACTS[idx]['TIPO RECURSO'] = c['TIPO RECURSO'];
+            if(c.tope_anual_mwh)  CONTRACTS[idx].tope_anual_mwh = c.tope_anual_mwh;
+            if(c.precio_usd)      CONTRACTS[idx].precio_usd     = c.precio_usd;
+            if(c.precio_display)  CONTRACTS[idx].precio_display  = c.precio_display;
+            if(c['TIPO RECURSO']) CONTRACTS[idx]['TIPO RECURSO'] = c['TIPO RECURSO'];
           }
         }
       });
       Object.assign(SUMINISTROS_BY_CONTRACT, suministros);
-      console.log(`[Contratos] XLSX: ${xlsxLoaded}/${CONTRATOS_FILES.length} archivos · ${contratos.length} contratos parseados`);
+      console.log(`[Contratos] XLSX: ${xlsxLoaded}/${CONTRATOS_FILES.length} · ${contratos.length} contratos`);
     } else {
       console.warn('[Contratos] Ningún XLSX cargado. Errores:', errores);
     }
@@ -701,10 +685,10 @@ async function loadContratos(){
     console.error('[Contratos] Error general en XLSX:', e);
   }
 
-  // 3. Cargar contratos_nuevos.json — SIEMPRE se intenta, aunque fallen los XLSX
+  // 2. contratos_nuevos.json desde /data/contratos/
   try{
     setS('K','loading','Leyendo contratos_nuevos.json…');
-    const jsonUrl=`https://raw.githubusercontent.com/${repo}/main/contratos_nuevos.json?t=${Date.now()}`;
+    const jsonUrl=`${BASE_CONT}contratos_nuevos.json?t=${Date.now()}`;
     const r=await fetch(jsonUrl);
     if(r.ok){
       const nuevos=await r.json();
@@ -713,18 +697,14 @@ async function loadContratos(){
           const nro=String(c['Nro contrato']);
           if(!existingNums.has(nro)){ CONTRACTS.push(c); existingNums.add(nro); jsonAdded++; }
         });
-        console.log(`[Contratos] contratos_nuevos.json: +${jsonAdded} contratos agregados`);
-      } else {
-        console.log('[Contratos] contratos_nuevos.json vacío o sin array');
+        console.log(`[Contratos] contratos_nuevos.json: +${jsonAdded} contratos`);
       }
     } else {
       console.warn(`[Contratos] contratos_nuevos.json → HTTP ${r.status}`);
     }
-  }catch(e){
-    console.warn('[Contratos] contratos_nuevos.json no disponible:', e.message);
-  }
+  }catch(e){ console.warn('[Contratos] contratos_nuevos.json:', e.message); }
 
-  // 4. Estado final
+  // 3. Estado final
   const total = CONTRACTS.length;
   if(total>0){
     let msg = `${total} contratos`;
@@ -734,13 +714,10 @@ async function loadContratos(){
     if(errores.length&&xlsxLoaded===0) msg += ` ⚠`;
     setS('K','ok',msg);
   } else {
-    const hint = errores.length ? 'Verificá el repo y la red' : 'Repo sin contratos';
-    setS('K','err',`Sin contratos · ${hint}`);
+    setS('K','err',`Sin contratos · verificá /data/contratos/ en el repo`);
     console.error('[Contratos] Sin datos. Errores:', errores);
   }
-
   refresh();
-  document.getElementById('btnLoadContratos').disabled=false;
 }
 
 // ── Parsear workbooks de contratos ───────────────────────────────────────────
@@ -1221,8 +1198,6 @@ function initColResize(){
 // ── EVENTS ────────────────────────────────────────────────────────────────────
 document.getElementById('searchInput').addEventListener('input',e=>{aTerm=e.target.value;syncFilterUI();refresh();});
 document.querySelectorAll('.filter-btn[data-type]').forEach(b=>b.addEventListener('click',()=>setType(b.dataset.type)));
-document.getElementById('repoConsumos').addEventListener('keydown',e=>{if(e.key==='Enter')loadConsumos();});
-document.getElementById('repoContratos').addEventListener('keydown',e=>{if(e.key==='Enter')loadContratos();});
 document.addEventListener('keydown',e=>{if(e.key==='Escape')closePanel();});
 
 // ── BOOT ─────────────────────────────────────────────────────────────────────
@@ -1238,12 +1213,11 @@ if(CONTRACTS.length){
   setS('K','loading','Conectando…');
 }
 
-const urlConsumos=new URLSearchParams(location.search).get('repo');
-if(urlConsumos) document.getElementById('repoConsumos').value=urlConsumos;
+function loadAll(){ loadConsumos(); loadContratos(); }
 
 // Cargar todo al iniciar
-loadConsumos();
-loadContratos();
+loadAll();
+
 </script>
 </body>
 </html>
