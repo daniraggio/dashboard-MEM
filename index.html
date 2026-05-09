@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Dashboard MEM — Consumo & Contratos v2</title>
+<title>Dashboard MEM — Consumo & Contratos v3</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Bricolage+Grotesque:wght@400;600;800&display=swap" rel="stylesheet">
@@ -11,7 +11,7 @@
 <!--
 ================================================================================
 DASHBOARD MEM UNIFICADO — DOCUMENTACIÓN INTERNA (solo para Claude)
-Versión: 2
+Versión: 3
 Repositorio: daniraggio/dashboard-MEM
 URL: https://daniraggio.github.io/dashboard-MEM/
 ================================================================================
@@ -56,8 +56,8 @@ Unificación de:
 
 ## HISTORIAL
 v1: Dashboard unificado inicial (carga básica desde contratos_nuevos.json)
-v2: Carga completa desde repo de contratos (XLSX + JSON); SUMINISTROS_BY_CONTRACT dinámico;
-    indicador de estado de carga de contratos en header
+v3: Repo de contratos precargado por defecto; mejor feedback de errores en carga de contratos;
+    intento de carga de contratos_nuevos.json aunque fallen los XLSX; logs de diagnóstico en consola
 ================================================================================
 -->
 
@@ -295,7 +295,7 @@ td.mhi { background:rgba(196,56,42,0.07) !important; color:var(--accent) !import
   <div>
     <div class="eyebrow">
       Sistema de Análisis Energético — MEM
-      <span class="version-badge">v2 UNIFICADO</span>
+      <span class="version-badge">v3 UNIFICADO</span>
     </div>
     <h1>Grandes Usuarios<br><span>&amp; Contratos</span></h1>
   </div>
@@ -511,6 +511,15 @@ td.mhi { background:rgba(196,56,42,0.07) !important; color:var(--accent) !import
 // ════════════════════════════════════════════════════════════════════════════════
 // INSTRUCCIÓN: Para actualizar, reemplazar ALL_CONTRATOS_BASE con el array ALL[]
 // del index_v26 vigente, y CUIT_NAMES con el diccionario CUIT_NAMES del mismo.
+//
+// Si ALL_CONTRATOS_BASE está vacío (como en v3), el dashboard funciona SOLO
+// con los datos que carga dinámicamente desde:
+//   - /data/CONTRATOS.xlsx, TOPES.xlsx, SUMINISTROS.xlsx (repo dashboard-energia)
+//   - contratos_nuevos.json (raíz del mismo repo)
+//
+// Para llenar la base embebida: abrir index_v26.html del repo dashboard-energia,
+// buscar "const ALL = [" y copiar ese array aquí como ALL_CONTRATOS_BASE.
+// Ídem con CUIT_NAMES.
 // ────────────────────────────────────────────────────────────────────────────────
 
 // CUIT → Nombre del vendedor (copiar de index_v26)
@@ -634,79 +643,103 @@ async function loadContratos(){
   const repo = document.getElementById('repoContratos').value.trim();
   if(!repo){ setS('K','err','Ingresá repo de contratos'); return; }
   document.getElementById('btnLoadContratos').disabled=true;
-  setS('K','loading','Cargando contratos…');
+  setS('K','loading','Conectando con repo…');
 
   // 1. Partir desde los datos base embebidos
   CONTRACTS = [...ALL_CONTRATOS_BASE];
   const existingNums = new Set(CONTRACTS.map(c=>String(c['Nro contrato'])));
+  let xlsxLoaded = 0;
+  let jsonAdded  = 0;
+  const errores  = [];
 
+  // 2. Intentar XLSX del repo de contratos
   try{
     const base=`https://raw.githubusercontent.com/${repo}/main/data/`;
-    let wbsList=[];
-    let loaded=0;
+    setS('K','loading','Cargando archivos XLSX…');
 
-    // Intentar cargar todos los XLSX del repo de contratos
     const fetchResults = await Promise.allSettled(
       CONTRATOS_FILES.map(f=>getXlsx(base+f).then(buf=>{
         const wb=XLSX.read(buf,{type:'array',raw:true});
         return{nombre:f,wb};
       }))
     );
-    wbsList = fetchResults.filter(r=>r.status==='fulfilled').map(r=>r.value);
-    loaded  = wbsList.length;
+
+    fetchResults.forEach((r,i)=>{
+      if(r.status==='rejected'){
+        const msg=`${CONTRATOS_FILES[i]}: ${r.reason?.message||r.reason}`;
+        errores.push(msg);
+        console.warn('[Contratos] XLSX no cargado →',msg);
+      }
+    });
+
+    const wbsList = fetchResults.filter(r=>r.status==='fulfilled').map(r=>r.value);
+    xlsxLoaded = wbsList.length;
 
     if(wbsList.length){
-      // Procesar los workbooks: extraer contratos, topes y suministros
       const {contratos, suministros} = parseContratosWorkbooks(wbsList);
-
-      // Merge: agregar contratos nuevos que no estén en la base embebida
       contratos.forEach(c=>{
         const nro=String(c['Nro contrato']);
         if(!existingNums.has(nro)){
-          CONTRACTS.push(c);
-          existingNums.add(nro);
+          CONTRACTS.push(c); existingNums.add(nro);
         } else {
-          // Enriquecer el existente con datos del XLSX (precio, tope, suministros)
           const idx=CONTRACTS.findIndex(x=>String(x['Nro contrato'])===nro);
           if(idx>=0){
-            if(c.tope_anual_mwh)    CONTRACTS[idx].tope_anual_mwh  = c.tope_anual_mwh;
-            if(c.precio_usd)        CONTRACTS[idx].precio_usd      = c.precio_usd;
-            if(c.precio_display)    CONTRACTS[idx].precio_display   = c.precio_display;
-            if(c['TIPO RECURSO'])   CONTRACTS[idx]['TIPO RECURSO']  = c['TIPO RECURSO'];
+            if(c.tope_anual_mwh)   CONTRACTS[idx].tope_anual_mwh = c.tope_anual_mwh;
+            if(c.precio_usd)       CONTRACTS[idx].precio_usd     = c.precio_usd;
+            if(c.precio_display)   CONTRACTS[idx].precio_display  = c.precio_display;
+            if(c['TIPO RECURSO'])  CONTRACTS[idx]['TIPO RECURSO'] = c['TIPO RECURSO'];
           }
         }
       });
-
-      // Cargar SUMINISTROS_BY_CONTRACT desde los workbooks
       Object.assign(SUMINISTROS_BY_CONTRACT, suministros);
+      console.log(`[Contratos] XLSX: ${xlsxLoaded}/${CONTRATOS_FILES.length} archivos · ${contratos.length} contratos parseados`);
+    } else {
+      console.warn('[Contratos] Ningún XLSX cargado. Errores:', errores);
     }
-
-    // 3. Cargar contratos_nuevos.json (público, sin token)
-    try{
-      const jsonUrl=`https://raw.githubusercontent.com/${repo}/main/contratos_nuevos.json?t=${Date.now()}`;
-      const r=await fetch(jsonUrl);
-      if(r.ok){
-        const nuevos=await r.json();
-        if(Array.isArray(nuevos)&&nuevos.length){
-          let added=0;
-          nuevos.forEach(c=>{
-            const nro=String(c['Nro contrato']);
-            if(!existingNums.has(nro)){ CONTRACTS.push(c); existingNums.add(nro); added++; }
-          });
-          if(added) console.log(`contratos_nuevos.json: +${added} contratos`);
-        }
-      }
-    }catch(e){ console.warn('contratos_nuevos.json no disponible',e); }
-
-    const msg = loaded
-      ? `${CONTRACTS.length} contratos · ${loaded}/${CONTRATOS_FILES.length} archivos`
-      : `${CONTRACTS.length} contratos (solo base)`;
-    setS('K','ok',msg);
-    refresh(); // Re-render tabla con badges actualizados
   }catch(e){
-    setS('K','err','Error: '+e.message);
-    console.error(e);
+    errores.push('XLSX: '+e.message);
+    console.error('[Contratos] Error general en XLSX:', e);
   }
+
+  // 3. Cargar contratos_nuevos.json — SIEMPRE se intenta, aunque fallen los XLSX
+  try{
+    setS('K','loading','Leyendo contratos_nuevos.json…');
+    const jsonUrl=`https://raw.githubusercontent.com/${repo}/main/contratos_nuevos.json?t=${Date.now()}`;
+    const r=await fetch(jsonUrl);
+    if(r.ok){
+      const nuevos=await r.json();
+      if(Array.isArray(nuevos)&&nuevos.length){
+        nuevos.forEach(c=>{
+          const nro=String(c['Nro contrato']);
+          if(!existingNums.has(nro)){ CONTRACTS.push(c); existingNums.add(nro); jsonAdded++; }
+        });
+        console.log(`[Contratos] contratos_nuevos.json: +${jsonAdded} contratos agregados`);
+      } else {
+        console.log('[Contratos] contratos_nuevos.json vacío o sin array');
+      }
+    } else {
+      console.warn(`[Contratos] contratos_nuevos.json → HTTP ${r.status}`);
+    }
+  }catch(e){
+    console.warn('[Contratos] contratos_nuevos.json no disponible:', e.message);
+  }
+
+  // 4. Estado final
+  const total = CONTRACTS.length;
+  if(total>0){
+    let msg = `${total} contratos`;
+    if(xlsxLoaded>0) msg += ` · ${xlsxLoaded}/${CONTRATOS_FILES.length} XLSX`;
+    else if(jsonAdded>0) msg += ` · solo JSON`;
+    else if(ALL_CONTRATOS_BASE.length>0) msg += ` · solo base embebida`;
+    if(errores.length&&xlsxLoaded===0) msg += ` ⚠`;
+    setS('K','ok',msg);
+  } else {
+    const hint = errores.length ? 'Verificá el repo y la red' : 'Repo sin contratos';
+    setS('K','err',`Sin contratos · ${hint}`);
+    console.error('[Contratos] Sin datos. Errores:', errores);
+  }
+
+  refresh();
   document.getElementById('btnLoadContratos').disabled=false;
 }
 
@@ -1199,7 +1232,11 @@ updSortH();
 
 // Precargar datos base embebidos de contratos
 CONTRACTS=[...ALL_CONTRATOS_BASE];
-if(CONTRACTS.length) setS('K','ok',`${CONTRACTS.length} contratos (base embebida)`);
+if(CONTRACTS.length){
+  setS('K','ok',`${CONTRACTS.length} contratos (base embebida)`);
+} else {
+  setS('K','loading','Conectando…');
+}
 
 const urlConsumos=new URLSearchParams(location.search).get('repo');
 if(urlConsumos) document.getElementById('repoConsumos').value=urlConsumos;
