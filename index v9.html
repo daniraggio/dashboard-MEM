@@ -1,0 +1,1614 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Dashboard MEM — Consumo & Contratos v9</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Bricolage+Grotesque:wght@400;600;800&display=swap" rel="stylesheet">
+
+<!--
+================================================================================
+DASHBOARD MEM UNIFICADO — DOCUMENTACIÓN INTERNA (solo para Claude)
+Versión: 9
+Repositorio: daniraggio/dashboard-MEM
+URL: https://daniraggio.github.io/dashboard-MEM/
+================================================================================
+
+## QUÉ ES ESTE DASHBOARD
+Unificación autónoma de consumos y contratos. Todos los datos viven en este mismo repo:
+  - Consumos:   daniraggio/dashboard-MEM → /data/consumos/{GUDI,GUMAs,GUMEs,Lista}.xlsx
+  - Contratos:  daniraggio/dashboard-MEM → /data/contratos/{CONTRATOS,TOPES,SUMINISTROS,
+                                            PARAMETROS_VARIABLES,CARACTERISTICAS}.xlsx
+                                         → /data/contratos/contratos_nuevos.json
+
+## REPOSITORIOS VINCULADOS
+  - Todo en: daniraggio/dashboard-MEM
+
+## ESTRUCTURA DE DATOS
+  - ALL[]:           GUs de consumo. Campos: id, name, type, dist, monthly[12], annual
+  - CONTRACTS[]:     Contratos. Campos clave: 'Nro contrato', 'Vendedor', 'Suministro / grupo dem.',
+                     'Conj. Generador', 'TIPO RECURSO', 'Tipo contrato', inicio_str, fin_str,
+                     tope_anual_mwh, precio_usd, precio_display.
+                     Fuentes: (1) ALL_CONTRATOS_BASE embebido, (2) XLSX /data/contratos/, (3) contratos_nuevos.json
+  - CUIT_NAMES{}:    CUIT → Nombre del vendedor.
+  - SUMINISTROS_BY_CONTRACT{}: Nro contrato → [NEMOs]. Desde SUMINISTROS.xlsx.
+
+## LÓGICA DE INTEGRACIÓN GU ↔ CONTRATO
+  1. Contratos directos: extractNemoFromSuministro(c['Suministro / grupo dem.']) === GU.id
+     El campo puede venir como "(NEMO) Descripción" o directamente "NEMO".
+     extractNemoFromSuministro() extrae el NEMO del paréntesis si lo hay.
+  2. Contratos grupales: GU.id aparece en SUMINISTROS_BY_CONTRACT[nroContrato]
+  El badge en la tabla muestra cantidad + volumen vigente. Click → panel lateral.
+
+## VIGENCIA DE CONTRATOS
+  Un contrato es vigente si: inicio_str <= hoy <= fin_str (comparación de fecha ISO YYYY-MM-DD).
+  volumenVigente(nemo) suma tope_anual_mwh de los contratos vigentes del GU.
+
+## PERFORMANCE
+  - Cache sessionStorage: XLSX y JSON se guardan comprimidos (base64) en sessionStorage.
+    Clave: "mem_cache_v1_{url_hash}". En recarga de página, se usan los datos cacheados.
+  - Renderizado virtual en tabla: solo se renderizan las filas visibles + buffer.
+    ROW_H = altura de fila en px. VIS_ROWS = filas visibles. BUFFER = filas extra arriba/abajo.
+
+## REGLAS PARA CLAUDE AL EDITAR
+  1. VERSIÓN: incrementar en: este comentario (Versión:), <title>, versionBadge innerHTML.
+  2. No hay lógica de escritura a GitHub (este dashboard es solo lectura).
+  3. Los XLSX se cachean en sessionStorage; cambiar CACHE_VERSION invalida el cache.
+
+## HISTORIAL
+v1: Dashboard unificado inicial (carga básica desde contratos_nuevos.json)
+v4: Dashboard autónomo — todos los datos en daniraggio/dashboard-MEM;
+    /data/consumos/ y /data/contratos/; eliminados inputs de repo; hardcodeado
+v5: Meses ocultos por defecto; filtro "Sin contratos"; fix matching NEMO con paréntesis
+v6: (numeración corregida en conversación)
+v7: Volumen vigente en badge de contratos; cache sessionStorage para XLSX;
+    renderizado virtual en tabla; tabla arranca con ancho completo
+v8: Sección de actualización de contratos — carga de 5 XLSX con drag&drop,
+    subida a GitHub via API con token hardcodeado, guarda semana de carga en
+    meta.json en el repo, invalida cache sessionStorage al actualizar
+================================================================================
+-->
+
+<style>
+/* ── TOKENS ─────────────────────────────────────────────────────────────────── */
+:root {
+  --bg:#f4f1eb; --bg2:#ede9e0; --surface:#ffffff;
+  --border:#d6cfc0; --ink:#1a1612; --ink2:#6b6458; --ink3:#a09890;
+  --guma:#c4382a; --gume:#1e6b45; --gudi:#1a3a6e; --accent:#c4382a;
+  --blue:#2155a3; --blue-bg:#edf2fc; --blue-text:#1a4282;
+  --amber:#b06a10; --amber-bg:#fdf3e3;
+  --green:#276940; --green-bg:#e8f5ee; --green-text:#1d5131;
+  --red:#b52a2a; --red-bg:#fdeaea;
+  --gray-bg:#eceae3;
+  --panel-w: 580px;
+}
+*,*::before,*::after { box-sizing: border-box; margin: 0; padding: 0; }
+html { scroll-behavior: smooth; }
+body {
+  background: var(--bg); color: var(--ink);
+  font-family: 'Bricolage Grotesque', sans-serif;
+  min-height: 100vh;
+  transition: margin-right 0.35s cubic-bezier(.4,0,.2,1);
+}
+body::after {
+  content: ''; position: fixed; inset: 0;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='4' height='4'%3E%3Ccircle cx='1' cy='1' r='0.4' fill='%23a09890' opacity='0.15'/%3E%3C/svg%3E");
+  pointer-events: none; z-index: 0;
+}
+body.panel-open { margin-right: var(--panel-w); }
+.page { position: relative; z-index: 1; max-width: 1440px; margin: 0 auto; padding: 0 32px 64px; }
+
+/* ── HEADER ─────────────────────────────────────────────────────────────────── */
+header {
+  display: grid; grid-template-columns: 1fr auto;
+  align-items: end; gap: 24px;
+  padding: 36px 0 20px; border-bottom: 2px solid var(--ink); margin-bottom: 24px;
+}
+.eyebrow { font-family:'DM Mono',monospace; font-size:11px; letter-spacing:3px; text-transform:uppercase; color:var(--ink2); margin-bottom:8px; display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+h1 { font-size: clamp(26px,3.5vw,48px); font-weight:800; line-height:0.95; }
+h1 span { color:var(--accent); }
+.version-badge { font-family:'DM Mono',monospace; font-size:10px; background:var(--blue-bg); color:var(--blue-text); padding:2px 8px; border-radius:20px; font-weight:600; letter-spacing:.04em; }
+
+/* Status row */
+.header-right { display:flex; flex-direction:column; align-items:flex-end; gap:10px; }
+.status-row { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+.repo-row { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+.repo-row input { background:var(--surface); border:1.5px solid var(--border); border-radius:6px; padding:8px 12px; font-family:'DM Mono',monospace; font-size:12px; color:var(--ink); outline:none; width:240px; transition:border-color 0.2s; }
+.repo-row input:focus { border-color:var(--ink); }
+.repo-label { font-family:'DM Mono',monospace; font-size:10px; color:var(--ink3); letter-spacing:1px; text-transform:uppercase; white-space:nowrap; }
+
+.btn { padding:8px 16px; background:var(--ink); color:var(--bg); border:none; border-radius:6px; font-family:'DM Mono',monospace; font-size:12px; cursor:pointer; transition:opacity 0.2s; white-space:nowrap; }
+.btn:hover { opacity:0.78; }
+.btn:disabled { opacity:0.35; cursor:not-allowed; }
+.btn.outline { background:transparent; color:var(--ink2); border:1.5px solid var(--border); }
+.btn.outline:hover { border-color:var(--ink); color:var(--ink); background:var(--bg2); }
+.btn.outline.on { background:var(--ink); color:var(--bg); border-color:var(--ink); }
+.btn.export { background:var(--gume); color:#fff; }
+
+.status-dot { width:8px; height:8px; border-radius:50%; background:var(--ink3); flex-shrink:0; }
+.status-dot.ok  { background:var(--gume); }
+.status-dot.err { background:var(--accent); }
+.status-dot.loading { background:var(--amber); animation:pulse .8s infinite alternate; }
+@keyframes pulse { to { opacity:.3; } }
+.status-txt { font-family:'DM Mono',monospace; font-size:11px; color:var(--ink3); }
+
+.search-box { position:relative; }
+.search-box input { width:300px; background:var(--surface); border:1.5px solid var(--border); border-radius:6px; padding:9px 14px 9px 36px; font-family:'DM Mono',monospace; font-size:13px; color:var(--ink); outline:none; transition:border-color 0.2s,box-shadow 0.2s; }
+.search-box input:focus { border-color:var(--ink); box-shadow:3px 3px 0 var(--ink); }
+.search-box input::placeholder { color:var(--ink3); }
+.search-icon { position:absolute; left:11px; top:50%; transform:translateY(-50%); color:var(--ink3); font-size:15px; pointer-events:none; }
+
+/* ── FILTER BAR ──────────────────────────────────────────────────────────────── */
+.filter-bar { display:flex; align-items:center; gap:8px; margin-bottom:16px; flex-wrap:wrap; }
+.filter-label { font-family:'DM Mono',monospace; font-size:11px; letter-spacing:2px; text-transform:uppercase; color:var(--ink3); margin-right:2px; }
+.filter-sep { width:1px; height:20px; background:var(--border); margin:0 4px; }
+.filter-btn { padding:6px 14px; border:1.5px solid var(--border); border-radius:4px; background:transparent; font-family:'DM Mono',monospace; font-size:12px; font-weight:500; color:var(--ink2); cursor:pointer; transition:all 0.15s; letter-spacing:1px; }
+.filter-btn:hover { border-color:var(--ink); color:var(--ink); background:var(--bg2); }
+.filter-btn.active[data-type="all"]  { background:var(--ink);  color:var(--bg); border-color:var(--ink);  }
+.filter-btn.active[data-type="GUMA"] { background:var(--guma); color:#fff;      border-color:var(--guma); }
+.filter-btn.active[data-type="GUME"] { background:var(--gume); color:#fff;      border-color:var(--gume); }
+.filter-btn.active[data-type="GUDI"] { background:var(--gudi); color:#fff;      border-color:var(--gudi); }
+.filter-btn.active:not([data-type])  { background:var(--blue); color:#fff;      border-color:var(--blue); }
+.dist-select { padding:6px 10px; border:1.5px solid var(--border); border-radius:4px; background:var(--surface); font-family:'DM Mono',monospace; font-size:11px; color:var(--ink2); cursor:pointer; outline:none; max-width:220px; transition:border-color 0.15s; }
+.dist-select:focus { border-color:var(--ink); }
+.dist-select.active { border-color:var(--accent); color:var(--accent); background:rgba(196,56,42,0.05); }
+.month-tag { display:none; align-items:center; gap:6px; padding:5px 10px; background:rgba(196,56,42,0.08); border:1px solid rgba(196,56,42,0.25); border-radius:4px; font-family:'DM Mono',monospace; font-size:11px; color:var(--accent); }
+.month-tag.on { display:flex; }
+.clear-tag { background:none; border:none; cursor:pointer; color:var(--accent); font-size:13px; padding:0; }
+
+/* ── STATS ───────────────────────────────────────────────────────────────────── */
+.stats-row { display:grid; grid-template-columns:repeat(5,1fr); gap:14px; margin-bottom:24px; }
+@media(max-width:1100px){ .stats-row{grid-template-columns:repeat(3,1fr);} }
+@media(max-width:700px) { .stats-row{grid-template-columns:repeat(2,1fr);} }
+.stat-card { background:var(--surface); border:1.5px solid var(--border); border-radius:8px; padding:16px 18px; position:relative; overflow:hidden; transition:transform 0.15s,box-shadow 0.15s; }
+.stat-card:hover { transform:translateY(-2px); box-shadow:4px 4px 0 var(--border); }
+.stat-card::before { content:''; position:absolute; top:0; left:0; right:0; height:3px; }
+.stat-card.s-total::before    { background:var(--accent); }
+.stat-card.s-avg::before      { background:var(--gume); }
+.stat-card.s-max::before      { background:var(--gudi); }
+.stat-card.s-count::before    { background:#b5821f; }
+.stat-card.s-contracts::before{ background:var(--blue); }
+.stat-lbl { font-family:'DM Mono',monospace; font-size:10px; letter-spacing:2px; text-transform:uppercase; color:var(--ink3); margin-bottom:8px; }
+.stat-num { font-size:26px; font-weight:800; line-height:1; margin-bottom:4px; }
+.stat-card.s-total .stat-num    { color:var(--accent); }
+.stat-card.s-avg .stat-num      { color:var(--gume); }
+.stat-card.s-max .stat-num      { color:var(--gudi); }
+.stat-card.s-count .stat-num    { color:#b5821f; }
+.stat-card.s-contracts .stat-num{ color:var(--blue); }
+.stat-sub { font-family:'DM Mono',monospace; font-size:11px; color:var(--ink3); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+
+/* ── CHARTS ──────────────────────────────────────────────────────────────────── */
+.charts-top { display:grid; grid-template-columns:1fr 1fr 280px; gap:14px; margin-bottom:14px; }
+@media(max-width:1200px){ .charts-top{grid-template-columns:1fr 1fr;} }
+@media(max-width:800px) { .charts-top{grid-template-columns:1fr;} }
+.bottom-row { display:grid; grid-template-columns:1fr 1fr; gap:14px; margin-bottom:14px; }
+@media(max-width:800px){ .bottom-row{grid-template-columns:1fr;} }
+.card { background:var(--surface); border:1.5px solid var(--border); border-radius:8px; padding:20px; }
+.card-hd { display:flex; align-items:flex-start; justify-content:space-between; margin-bottom:16px; gap:8px; flex-wrap:wrap; }
+.card-title { font-family:'DM Mono',monospace; font-size:10px; letter-spacing:2px; text-transform:uppercase; color:var(--ink3); }
+.card-meta  { font-family:'DM Mono',monospace; font-size:11px; color:var(--ink2); }
+.chart-wrap    { position:relative; height:220px; }
+.chart-wrap-sm { position:relative; height:220px; }
+.chart-wrap-rk { position:relative; height:260px; }
+
+/* ── TABLE ───────────────────────────────────────────────────────────────────── */
+.table-ctl { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+.table-wrap { overflow-x:auto; max-height:520px; overflow-y:auto; }
+.table-wrap::-webkit-scrollbar { width:4px; height:4px; }
+.table-wrap::-webkit-scrollbar-track { background:var(--bg2); }
+.table-wrap::-webkit-scrollbar-thumb { background:var(--border); border-radius:2px; }
+table { width:100%; border-collapse:collapse; font-size:13px; }
+thead { position:sticky; top:0; z-index:2; }
+thead tr.sort-row th { position:relative; background:var(--bg2); font-family:'DM Mono',monospace; font-size:10px; letter-spacing:1.5px; text-transform:uppercase; color:var(--ink3); padding:10px 12px; text-align:right; border-bottom:1px solid var(--border); white-space:nowrap; cursor:pointer; user-select:none; transition:color 0.15s; }
+thead tr.sort-row th:first-child,
+thead tr.sort-row th:nth-child(2),
+thead tr.sort-row th:nth-child(3),
+thead tr.sort-row th:nth-child(4),
+thead tr.sort-row th:nth-child(5) { text-align:left; }
+thead tr.sort-row th:hover { color:var(--ink); }
+thead tr.sort-row th.sorted { color:var(--ink); }
+thead tr.sort-row th.sorted::after { content:attr(data-arrow); margin-left:4px; opacity:.55; }
+thead tr.flt-row th { background:var(--bg2); padding:4px 6px; border-bottom:1.5px solid var(--border); }
+thead tr.flt-row th input { width:100%; min-width:36px; background:var(--surface); border:1px solid var(--border); border-radius:3px; padding:3px 6px; font-family:'DM Mono',monospace; font-size:10px; color:var(--ink); outline:none; text-align:right; }
+thead tr.flt-row th:first-child input,
+thead tr.flt-row th:nth-child(2) input,
+thead tr.flt-row th:nth-child(3) input,
+thead tr.flt-row th:nth-child(4) input,
+thead tr.flt-row th:nth-child(5) input { text-align:left; }
+thead tr.flt-row th input:focus { border-color:var(--accent); }
+thead tr.flt-row th input::placeholder { color:var(--ink3); }
+tbody tr { border-bottom:1px solid var(--bg2); cursor:pointer; transition:background 0.1s; }
+tbody tr:hover { background:var(--bg2); }
+tbody tr.selected { background:var(--blue-bg) !important; border-left:3px solid var(--blue); }
+tbody td { padding:10px 12px; text-align:right; font-family:'DM Mono',monospace; font-size:12px; color:var(--ink2); white-space:nowrap; }
+tbody td.td-name { text-align:left; font-family:'Bricolage Grotesque',sans-serif; font-weight:600; font-size:13px; color:var(--ink); max-width:200px; overflow:hidden; text-overflow:ellipsis; }
+tbody td.td-nemo { text-align:left; font-size:11px; color:var(--ink3); }
+tbody td.td-type { text-align:left; }
+tbody td.td-dist { text-align:left; font-size:11px; color:var(--ink2); max-width:160px; overflow:hidden; text-overflow:ellipsis; }
+tbody td.td-contracts { text-align:left; width:140px; }
+td.ann { font-weight:500; color:var(--ink) !important; }
+td.mhi { background:rgba(196,56,42,0.07) !important; color:var(--accent) !important; font-weight:500; }
+.type-badge { display:inline-block; padding:1px 7px; border-radius:3px; font-size:10px; font-family:'DM Mono',monospace; letter-spacing:1px; }
+.badge-GUMA { background:rgba(196,56,42,0.1); color:var(--guma); }
+.badge-GUME { background:rgba(30,107,69,0.1);  color:var(--gume); }
+.badge-GUDI { background:rgba(26,58,110,0.1);  color:var(--gudi); }
+.contract-badge { display:inline-flex; align-items:center; gap:4px; padding:2px 8px; border-radius:12px; font-size:10px; font-family:'DM Mono',monospace; font-weight:600; background:var(--blue-bg); color:var(--blue-text); border:1px solid rgba(33,85,163,0.2); cursor:pointer; transition:all 0.15s; white-space:nowrap; }
+.contract-badge:hover { background:var(--blue); color:#fff; }
+.contract-badge.grouped { background:#f0e6ff; color:#5c2d9c; border-color:rgba(92,45,156,0.2); }
+.contract-badge.grouped:hover { background:#5c2d9c; color:#fff; }
+.badge-vol { font-size:9px; opacity:0.72; margin-left:1px; }
+.no-contract { font-family:'DM Mono',monospace; font-size:10px; color:var(--ink3); }
+.col-resizer { position:absolute; right:0; top:0; bottom:0; width:5px; cursor:col-resize; user-select:none; z-index:3; }
+.col-resizer:hover,.col-resizer.dragging { background:var(--accent); opacity:.5; }
+.empty { text-align:center; padding:48px; font-family:'DM Mono',monospace; font-size:13px; color:var(--ink3); }
+tr.vt-pad td { padding:0; border:none; background:transparent; }
+.tbl-filter-bar { display:flex; align-items:center; gap:8px; flex-wrap:wrap; padding:12px 0 14px; border-bottom:1px solid var(--border); margin-bottom:14px; }
+.tbl-filter-bar .filter-label { font-family:'DM Mono',monospace; font-size:10px; letter-spacing:2px; text-transform:uppercase; color:var(--ink3); }
+.tbl-filter-bar .filter-btn { padding:5px 12px; font-size:11px; }
+.tbl-filter-bar .dist-select { font-size:11px; padding:5px 8px; }
+.tbl-search { position:relative; }
+.tbl-search input { width:200px; background:var(--surface); border:1.5px solid var(--border); border-radius:6px; padding:6px 10px 6px 30px; font-family:'DM Mono',monospace; font-size:12px; color:var(--ink); outline:none; transition:border-color 0.2s; }
+.tbl-search input:focus { border-color:var(--ink); }
+.tbl-search input::placeholder { color:var(--ink3); }
+.tbl-search-icon { position:absolute; left:9px; top:50%; transform:translateY(-50%); color:var(--ink3); font-size:13px; pointer-events:none; }
+
+/* ── UPLOAD SECTION ──────────────────────────────────────────────────────────── */
+.upload-section { margin-top: 32px; }
+.upload-section .card-hd { margin-bottom: 20px; }
+
+.upload-single { position: relative; border: 2px dashed var(--border); border-radius: 10px; padding: 36px 24px; text-align: center; cursor: pointer; transition: all 0.2s; background: var(--bg2); display: flex; flex-direction: column; align-items: center; gap: 12px; }
+.upload-single:hover { border-color: var(--ink2); background: var(--surface); }
+.upload-single.drag-over { border-color: var(--blue); background: var(--blue-bg); }
+.upload-single.uploading { border-color: var(--amber); background: var(--amber-bg); cursor: default; pointer-events: none; }
+.upload-single.done  { border-color: var(--gume); border-style: solid; background: var(--green-bg); }
+.upload-single.error { border-color: var(--accent); border-style: solid; background: var(--red-bg); }
+.upload-single input[type=file] { position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; height: 100%; }
+.upload-single-icon  { font-size: 32px; line-height: 1; }
+.upload-single-title { font-family: 'DM Mono', monospace; font-size: 12px; color: var(--ink2); }
+.upload-single-files { display: flex; gap: 6px; flex-wrap: wrap; justify-content: center; }
+.upload-file-tag { font-family: 'DM Mono', monospace; font-size: 10px; background: var(--surface); border: 1px solid var(--border); border-radius: 4px; padding: 2px 8px; color: var(--ink3); }
+.upload-file-tag.ok   { background: var(--green-bg); border-color: var(--gume); color: var(--green-text); }
+.upload-file-tag.err  { background: var(--red-bg); border-color: var(--accent); color: var(--accent); }
+
+.upload-log { margin-top: 16px; background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; padding: 12px 16px; font-family: 'DM Mono', monospace; font-size: 11px; line-height: 1.8; color: var(--ink2); max-height: 200px; overflow-y: auto; display: none; }
+.upload-log.show { display: block; }
+.log-ok   { color: var(--gume); }
+.log-err  { color: var(--accent); font-weight: 600; }
+.log-warn { color: var(--amber); }
+.log-info { color: var(--ink3); }
+
+.side-panel { position:fixed; top:0; right:0; bottom:0; width:var(--panel-w); max-width:100vw; background:var(--surface); border-left:2px solid var(--ink); z-index:1000; overflow-y:auto; transform:translateX(100%); transition:transform 0.35s cubic-bezier(.4,0,.2,1); display:flex; flex-direction:column; }
+.side-panel.open { transform:translateX(0); }
+.panel-header { padding:20px 24px 16px; border-bottom:1.5px solid var(--border); position:sticky; top:0; background:var(--surface); z-index:2; display:flex; align-items:flex-start; justify-content:space-between; gap:12px; }
+.panel-client-name { font-size:17px; font-weight:800; color:var(--ink); line-height:1.2; max-width:400px; }
+.panel-nemo { font-family:'DM Mono',monospace; font-size:11px; color:var(--ink3); margin-top:4px; }
+.panel-close { background:none; border:1.5px solid var(--border); border-radius:6px; width:32px; height:32px; cursor:pointer; font-size:16px; color:var(--ink2); display:flex; align-items:center; justify-content:center; transition:all 0.15s; flex-shrink:0; }
+.panel-close:hover { background:var(--ink); color:var(--bg); border-color:var(--ink); }
+.panel-body { padding:20px 24px; flex:1; }
+.panel-section-title { font-family:'DM Mono',monospace; font-size:10px; letter-spacing:3px; text-transform:uppercase; color:var(--ink3); margin-bottom:14px; padding-bottom:8px; border-bottom:1px solid var(--border); }
+.panel-stats { display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px; margin-bottom:20px; }
+.panel-stat { background:var(--bg2); border-radius:6px; padding:10px 12px; }
+.panel-stat-lbl { font-family:'DM Mono',monospace; font-size:9px; letter-spacing:1.5px; text-transform:uppercase; color:var(--ink3); margin-bottom:4px; }
+.panel-stat-val { font-size:16px; font-weight:800; color:var(--ink); }
+.panel-stat-val.c-blue  { color:var(--blue); }
+.panel-stat-val.c-green { color:var(--gume); }
+.panel-stat-val.c-amber { color:var(--amber); }
+.contract-card { background:var(--bg2); border:1.5px solid var(--border); border-radius:8px; padding:14px 16px; margin-bottom:10px; transition:border-color 0.15s; }
+.contract-card:hover { border-color:var(--blue); }
+.contract-card-header { display:flex; align-items:flex-start; justify-content:space-between; gap:8px; margin-bottom:10px; }
+.contract-num { font-family:'DM Mono',monospace; font-size:11px; color:var(--ink3); }
+.contract-gen { font-weight:700; font-size:14px; color:var(--ink); }
+.contract-tags { display:flex; gap:5px; flex-wrap:wrap; margin-top:4px; }
+.ctag { display:inline-block; font-size:9px; font-weight:600; padding:2px 6px; border-radius:3px; letter-spacing:.02em; }
+.ctag-r  { background:var(--green-bg); color:var(--green-text); }
+.ctag-nr { background:var(--amber-bg); color:var(--amber); }
+.ctag-na { background:var(--gray-bg);  color:var(--ink3); }
+.ctag-g  { background:#f0e6ff; color:#5c2d9c; }
+.ctag-inc{ background:#fffbe6; color:#7a5c00; }
+.contract-grid { display:grid; grid-template-columns:1fr 1fr; gap:6px 14px; }
+.cg-item { display:flex; flex-direction:column; gap:1px; }
+.cg-lbl { font-family:'DM Mono',monospace; font-size:9px; letter-spacing:1px; text-transform:uppercase; color:var(--ink3); }
+.cg-val { font-family:'DM Mono',monospace; font-size:11px; color:var(--ink); font-weight:500; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.cg-val.c-amber { color:var(--amber); }
+.nemo-list { margin-top:10px; padding-top:10px; border-top:1px solid var(--border); }
+.nemo-list-title { font-family:'DM Mono',monospace; font-size:9px; letter-spacing:1px; text-transform:uppercase; color:var(--ink3); margin-bottom:6px; }
+.nemo-tags { display:flex; flex-wrap:wrap; gap:4px; }
+.nemo-tag { display:inline-block; background:var(--blue-bg); color:var(--blue-text); border-radius:3px; padding:2px 5px; font-family:'DM Mono',monospace; font-size:9px; white-space:nowrap; }
+.nemo-tag.highlight { background:var(--green-bg); color:var(--green-text); font-weight:700; }
+.panel-empty   { text-align:center; padding:32px 16px; font-family:'DM Mono',monospace; font-size:13px; color:var(--ink3); }
+.panel-loading { text-align:center; padding:32px 16px; font-family:'DM Mono',monospace; font-size:12px; color:var(--ink3); }
+.panel-overlay { display:none; position:fixed; inset:0; background:rgba(26,22,18,.35); z-index:999; backdrop-filter:blur(2px); }
+.panel-overlay.show { display:block; }
+</style>
+</head>
+<body>
+<div class="page">
+
+<!-- HEADER -->
+<header>
+  <div>
+    <div class="eyebrow">
+      Sistema de Análisis Energético — MEM
+      <span class="version-badge">v9 UNIFICADO</span>
+    </div>
+    <h1>Grandes Usuarios<br><span>&amp; Contratos</span></h1>
+  </div>
+  <div class="header-right">
+    <!-- Estado de carga -->
+    <div class="status-row">
+      <span class="status-dot" id="sDotC"></span>
+      <span class="status-txt" id="sTxtC">Cargando consumos…</span>
+      <span style="color:var(--border);margin:0 4px">|</span>
+      <span class="status-dot" id="sDotK"></span>
+      <span class="status-txt" id="sTxtK">Cargando contratos…</span>
+      <button class="btn outline" style="margin-left:8px" onclick="loadAll()" title="Recargar datos">⟳</button>
+    </div>
+    <div class="search-box">
+      <span class="search-icon">⌕</span>
+      <input type="text" id="searchInput" placeholder="Buscar por nombre o NEMO…" autocomplete="off">
+    </div>
+  </div>
+</header>
+
+<!-- FILTER BAR -->
+<div class="filter-bar">
+  <span class="filter-label">Tipo</span>
+  <button class="filter-btn active" data-type="all" onclick="setType('all')">Todos</button>
+  <button class="filter-btn" data-type="GUMA" onclick="setType('GUMA')">GUMA</button>
+  <button class="filter-btn" data-type="GUME" onclick="setType('GUME')">GUME</button>
+  <button class="filter-btn" data-type="GUDI" onclick="setType('GUDI')">GUDI</button>
+  <div class="filter-sep"></div>
+  <span class="filter-label">Distribuidor</span>
+  <select class="dist-select" id="distSelect" onchange="setDistFilter(this.value)"><option value="">Todos</option></select>
+  <div class="filter-sep"></div>
+  <span class="filter-label">Contratos</span>
+  <button class="filter-btn outline" id="btnFilterContracts" onclick="toggleFilterContracts()">Con contratos</button>
+  <button class="filter-btn outline" id="btnFilterSinContratos" onclick="toggleFilterSinContratos()">Sin contratos</button>
+  <div class="month-tag" id="mTag">
+    <span id="mTagLbl"></span>
+    <button class="clear-tag" onclick="clearMonth()">✕</button>
+  </div>
+</div>
+
+<!-- STATS -->
+<div class="stats-row">
+  <div class="stat-card s-total">
+    <div class="stat-lbl">Consumo Total</div>
+    <div class="stat-num" id="stTotal">—</div>
+    <div class="stat-sub">anuales</div>
+  </div>
+  <div class="stat-card s-avg">
+    <div class="stat-lbl">Promedio / Cliente</div>
+    <div class="stat-num" id="stAvg">—</div>
+    <div class="stat-sub">por año</div>
+  </div>
+  <div class="stat-card s-max">
+    <div class="stat-lbl">Mayor Consumidor</div>
+    <div class="stat-num" id="stMaxV">—</div>
+    <div class="stat-sub" id="stMaxN">—</div>
+  </div>
+  <div class="stat-card s-count">
+    <div class="stat-lbl">Clientes en Vista</div>
+    <div class="stat-num" id="stCount">—</div>
+    <div class="stat-sub" id="stCountS">de 0 totales</div>
+  </div>
+  <div class="stat-card s-contracts">
+    <div class="stat-lbl">Con Contratos</div>
+    <div class="stat-num" id="stContracts">—</div>
+    <div class="stat-sub" id="stContractsSub">en la vista</div>
+  </div>
+</div>
+
+<!-- TOP CHARTS -->
+<div class="charts-top">
+  <div class="card">
+    <div class="card-hd">
+      <div>
+        <div class="card-title">Perfil mensual — clientes filtrados</div>
+        <div class="card-meta" id="profileMeta"></div>
+      </div>
+    </div>
+    <div class="chart-wrap"><canvas id="cClient"></canvas></div>
+  </div>
+  <div class="card">
+    <div class="card-hd">
+      <div class="card-title">Consumo mensual total</div>
+      <div class="card-meta" id="mlyMeta"></div>
+    </div>
+    <div class="chart-wrap"><canvas id="cMonthly"></canvas></div>
+  </div>
+  <div class="card">
+    <div class="card-hd"><div class="card-title">Distribución por tipo</div></div>
+    <div class="chart-wrap-sm"><canvas id="cType"></canvas></div>
+  </div>
+</div>
+
+<!-- BOTTOM CHARTS -->
+<div class="bottom-row">
+  <div class="card">
+    <div class="card-hd">
+      <div class="card-title">Ranking — Top 10</div>
+      <div class="card-meta" id="rkMeta">anual · click para filtrar</div>
+    </div>
+    <div class="chart-wrap-rk"><canvas id="cRanking"></canvas></div>
+  </div>
+  <div class="card">
+    <div class="card-hd"><div class="card-title">Comparativa por tipo / mes</div></div>
+    <div class="chart-wrap-rk"><canvas id="cCompare"></canvas></div>
+  </div>
+</div>
+
+<!-- TABLE -->
+<div class="card">
+  <div class="card-hd">
+    <div class="card-title">Detalle de grandes usuarios</div>
+    <div class="table-ctl">
+      <span class="card-meta" id="tblMeta"></span>
+      <button class="btn outline" id="btnCols" onclick="toggleCols()">Mostrar meses</button>
+      <button class="btn export" onclick="exportExcel()">↓ Excel</button>
+    </div>
+  </div>
+  <div class="tbl-filter-bar">
+    <span class="filter-label">Tipo</span>
+    <button class="filter-btn active" data-ttype="all"  onclick="setTypeTbl('all')">Todos</button>
+    <button class="filter-btn" data-ttype="GUMA" onclick="setTypeTbl('GUMA')">GUMA</button>
+    <button class="filter-btn" data-ttype="GUME" onclick="setTypeTbl('GUME')">GUME</button>
+    <button class="filter-btn" data-ttype="GUDI" onclick="setTypeTbl('GUDI')">GUDI</button>
+    <div class="filter-sep"></div>
+    <select class="dist-select" id="distSelectTbl" onchange="setDistFilterTbl(this.value)"><option value="">Todos los distribuidores</option></select>
+    <div class="tbl-search">
+      <span class="tbl-search-icon">⌕</span>
+      <input type="text" id="tblSearch" placeholder="Buscar…" oninput="setTermTbl(this.value)">
+    </div>
+  </div>
+  <div class="table-wrap" id="tableWrap">
+    <table id="tbl">
+      <thead>
+        <tr class="sort-row" id="sortRow">
+          <th data-k="name"      onclick="sortBy('name')">Nombre<span class="col-resizer"></span></th>
+          <th data-k="id"        onclick="sortBy('id')">NEMO<span class="col-resizer"></span></th>
+          <th data-k="type"      onclick="sortBy('type')">Tipo<span class="col-resizer"></span></th>
+          <th data-k="dist"      onclick="sortBy('dist')">Distribuidor<span class="col-resizer"></span></th>
+          <th data-k="contracts" style="text-align:left;cursor:default">Contratos<span class="col-resizer"></span></th>
+          <th data-k="m0"  class="col-m" onclick="sortByM(0)">Ene<span class="col-resizer"></span></th>
+          <th data-k="m1"  class="col-m" onclick="sortByM(1)">Feb<span class="col-resizer"></span></th>
+          <th data-k="m2"  class="col-m" onclick="sortByM(2)">Mar<span class="col-resizer"></span></th>
+          <th data-k="m3"  class="col-m" onclick="sortByM(3)">Abr<span class="col-resizer"></span></th>
+          <th data-k="m4"  class="col-m" onclick="sortByM(4)">May<span class="col-resizer"></span></th>
+          <th data-k="m5"  class="col-m" onclick="sortByM(5)">Jun<span class="col-resizer"></span></th>
+          <th data-k="m6"  class="col-m" onclick="sortByM(6)">Jul<span class="col-resizer"></span></th>
+          <th data-k="m7"  class="col-m" onclick="sortByM(7)">Ago<span class="col-resizer"></span></th>
+          <th data-k="m8"  class="col-m" onclick="sortByM(8)">Sep<span class="col-resizer"></span></th>
+          <th data-k="m9"  class="col-m" onclick="sortByM(9)">Oct<span class="col-resizer"></span></th>
+          <th data-k="m10" class="col-m" onclick="sortByM(10)">Nov<span class="col-resizer"></span></th>
+          <th data-k="m11" class="col-m" onclick="sortByM(11)">Dic<span class="col-resizer"></span></th>
+          <th data-k="annual" onclick="sortBy('annual')">Anual (MWh)<span class="col-resizer"></span></th>
+        </tr>
+        <tr class="flt-row">
+          <th><input id="fName" type="text" placeholder="nombre…" oninput="colFilter()"></th>
+          <th><input id="fNemo" type="text" placeholder="nemo…"   oninput="colFilter()"></th>
+          <th><input id="fType" type="text" placeholder="tipo…"   oninput="colFilter()"></th>
+          <th><input id="fDist" type="text" placeholder="distrib…" oninput="colFilter()"></th>
+          <th></th>
+          <th class="col-m"><input id="fm0"  type="number" placeholder="≥" oninput="colFilter()"></th>
+          <th class="col-m"><input id="fm1"  type="number" placeholder="≥" oninput="colFilter()"></th>
+          <th class="col-m"><input id="fm2"  type="number" placeholder="≥" oninput="colFilter()"></th>
+          <th class="col-m"><input id="fm3"  type="number" placeholder="≥" oninput="colFilter()"></th>
+          <th class="col-m"><input id="fm4"  type="number" placeholder="≥" oninput="colFilter()"></th>
+          <th class="col-m"><input id="fm5"  type="number" placeholder="≥" oninput="colFilter()"></th>
+          <th class="col-m"><input id="fm6"  type="number" placeholder="≥" oninput="colFilter()"></th>
+          <th class="col-m"><input id="fm7"  type="number" placeholder="≥" oninput="colFilter()"></th>
+          <th class="col-m"><input id="fm8"  type="number" placeholder="≥" oninput="colFilter()"></th>
+          <th class="col-m"><input id="fm9"  type="number" placeholder="≥" oninput="colFilter()"></th>
+          <th class="col-m"><input id="fm10" type="number" placeholder="≥" oninput="colFilter()"></th>
+          <th class="col-m"><input id="fm11" type="number" placeholder="≥" oninput="colFilter()"></th>
+          <th><div style="display:flex;gap:3px">
+            <input id="fAnnMin" type="number" placeholder="min" oninput="colFilter()" style="width:50%">
+            <input id="fAnnMax" type="number" placeholder="max" oninput="colFilter()" style="width:50%">
+          </div></th>
+        </tr>
+      </thead>
+      <tbody id="tBody">
+        <tr><td colspan="18" class="empty">Cargá los datos desde GitHub para comenzar</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+<!-- UPLOAD SECTION -->
+<div class="card upload-section">
+  <div class="card-hd">
+    <div>
+      <div class="card-title">Actualización de contratos</div>
+      <div class="card-meta" id="uploadLastMeta">Cargando info de última actualización…</div>
+    </div>
+  </div>
+
+  <div class="upload-single" id="uploadSingle"
+       ondragover="uploadDragOver(event)"
+       ondragleave="uploadDragLeave(event)"
+       ondrop="uploadDrop(event)">
+    <input type="file" id="uploadInput" accept=".xlsx" multiple onchange="uploadChange(event)">
+    <div class="upload-single-icon" id="uploadIcon">📂</div>
+    <div class="upload-single-title" id="uploadTitle">Arrastrá los 5 archivos acá o hacé click para seleccionarlos</div>
+    <div class="upload-single-files" id="uploadFileList">
+      <span class="upload-file-tag">CONTRATOS.xlsx</span>
+      <span class="upload-file-tag">TOPES.xlsx</span>
+      <span class="upload-file-tag">SUMINISTROS.xlsx</span>
+      <span class="upload-file-tag">PARAMETROS_VARIABLES.xlsx</span>
+      <span class="upload-file-tag">CARACTERISTICAS.xlsx</span>
+    </div>
+  </div>
+
+  <div class="upload-log" id="uploadLog"></div>
+</div>
+
+</div><!-- /page -->
+
+<!-- PANEL OVERLAY -->
+<div class="panel-overlay" id="panelOverlay" onclick="closePanel()"></div>
+
+<!-- SIDE PANEL -->
+<div class="side-panel" id="sidePanel">
+  <div class="panel-header">
+    <div>
+      <div class="panel-client-name" id="panelClientName">—</div>
+      <div class="panel-nemo" id="panelClientNemo"></div>
+    </div>
+    <button class="panel-close" onclick="closePanel()" title="Cerrar">✕</button>
+  </div>
+  <div class="panel-body" id="panelBody">
+    <div class="panel-empty">Seleccioná un cliente con contratos para ver el detalle</div>
+  </div>
+</div>
+
+<script>
+// ════════════════════════════════════════════════════════════════════════════════
+// DATOS BASE DE CONTRATOS (embebidos desde index_v26)
+// ════════════════════════════════════════════════════════════════════════════════
+// INSTRUCCIÓN: Para actualizar, reemplazar ALL_CONTRATOS_BASE con el array ALL[]
+// del index_v26 vigente, y CUIT_NAMES con el diccionario CUIT_NAMES del mismo.
+//
+// Si ALL_CONTRATOS_BASE está vacío (como en v3), el dashboard funciona SOLO
+// con los datos que carga dinámicamente desde:
+//   - /data/CONTRATOS.xlsx, TOPES.xlsx, SUMINISTROS.xlsx (repo dashboard-energia)
+//   - contratos_nuevos.json (raíz del mismo repo)
+//
+// Para llenar la base embebida: abrir index_v26.html del repo dashboard-energia,
+// buscar "const ALL = [" y copiar ese array aquí como ALL_CONTRATOS_BASE.
+// Ídem con CUIT_NAMES.
+// ────────────────────────────────────────────────────────────────────────────────
+
+// CUIT → Nombre del vendedor (copiar de index_v26)
+const CUIT_NAMES = {};
+
+// Contratos base embebidos (copiar array ALL[] de index_v26)
+// Mientras esté vacío, el dashboard funciona con lo que carga de los XLSX y del JSON.
+const ALL_CONTRATOS_BASE = [];
+
+// ════════════════════════════════════════════════════════════════════════════════
+// ESTADO GLOBAL
+// ════════════════════════════════════════════════════════════════════════════════
+let ALL       = [];   // GUs de consumo
+let CONTRACTS = [];   // Contratos (fusión de base + XLSX + JSON)
+let SUMINISTROS_BY_CONTRACT = {};  // nroContrato → [NEMOs]
+
+const MO   = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
+const TC   = { GUMA:'#c4382a', GUME:'#1e6b45', GUDI:'#1a3a6e' };
+const TBG  = { GUMA:'rgba(196,56,42,0.7)', GUME:'rgba(30,107,69,0.7)', GUDI:'rgba(26,58,110,0.7)' };
+const GRID = '#ede9e0';
+const REPO       = 'daniraggio/dashboard-MEM';
+const BASE_RAW   = `https://raw.githubusercontent.com/${REPO}/main`;
+const BASE_CONS  = `${BASE_RAW}/data/consumos/`;
+const BASE_CONT  = `${BASE_RAW}/data/contratos/`;
+const GH_TOKEN   = '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';
+const GH_API     = `https://api.github.com/repos/${REPO}/contents`;
+
+const DATA_FILES = [
+  { file:'GUDI.xlsx',  type:'GUDI' },
+  { file:'GUMAs.xlsx', type:'GUMA' },
+  { file:'GUMEs.xlsx', type:'GUME' },
+];
+const CONTRATOS_FILES = [
+  'CONTRATOS.xlsx',
+  'TOPES.xlsx',
+  'SUMINISTROS.xlsx',
+  'PARAMETROS_VARIABLES.xlsx',
+  'CARACTERISTICAS.xlsx',
+];
+
+const NAMES = {
+  'AARGTAOY':'AEROP ARG 2000 - Aeroparque','ABRILHCY':'ABRIL CLUB DE CAMPO',
+  '14DEMP3N':'14 DE JULIO S.A. - PESQUERA','72GAVEIN':'72 GAS S.A.- BOUL.72 LA PLATA',
+  'AAAAPION':'AA ABRASIVOS ARGENTINOS SAIC','GD00012I':'ESTADO MAYOR GRAL DE LA ARMADA',
+};
+
+let aType  = 'all';
+let aDist  = '';
+let aTerm  = '';
+let aMonth = null;
+let aOnlyContracts    = false;
+let aOnlySinContratos = false;
+let sKey   = 'annual';
+let sDir   = -1;
+let showM  = false;
+let CF     = {};
+let selectedNemo = null;
+
+function gname(id){ return NAMES[id]||id; }
+
+// ════════════════════════════════════════════════════════════════════════════════
+// CHARTS
+// ════════════════════════════════════════════════════════════════════════════════
+let cClient, cMonthly, cType, cRanking, cCompare;
+Chart.defaults.font.family = "'DM Mono', monospace";
+Chart.defaults.color = '#a09890';
+const scaleY = { grid:{color:GRID}, ticks:{color:'#a09890', callback:v=>fmtS(v)}, beginAtZero:true };
+const scaleX = { grid:{color:GRID}, ticks:{color:'#a09890'} };
+const scaleXnoGrid = { grid:{display:false}, ticks:{color:'#a09890'} };
+
+function initCharts(){
+  cClient = new Chart(document.getElementById('cClient'),{type:'line',data:{labels:MO,datasets:[]},options:{responsive:true,maintainAspectRatio:false,onClick(_,els){if(els.length)toggleMonth(els[0].index);},plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>' '+fmtS(c.raw)}}},scales:{x:scaleX,y:scaleY}}});
+  cMonthly= new Chart(document.getElementById('cMonthly'),{type:'bar',data:{labels:MO,datasets:[]},options:{responsive:true,maintainAspectRatio:false,onClick(_,els){if(els.length)toggleMonth(els[0].index);},plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>' '+fmtS(c.raw)}}},scales:{x:scaleXnoGrid,y:scaleY}}});
+  cType   = new Chart(document.getElementById('cType'),{type:'doughnut',data:{labels:[],datasets:[]},options:{responsive:true,maintainAspectRatio:false,cutout:'62%',onClick(_,els){if(!els.length)return;const t=['GUMA','GUME','GUDI'][els[0].index];setType(t===aType?'all':t);},plugins:{legend:{position:'bottom',labels:{color:'#6b6458',padding:14,boxWidth:10,font:{size:11}}},tooltip:{callbacks:{label:c=>' '+c.label+': '+fmtS(c.raw)}}}}});
+  cRanking= new Chart(document.getElementById('cRanking'),{type:'bar',data:{labels:[],datasets:[]},options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,onClick(_,els){if(!els.length)return;const d=(cRanking._rows||[])[els[0].index];if(!d)return;aTerm=d.name;document.getElementById('searchInput').value=d.name;syncFilterUI();refresh();},plugins:{legend:{display:false},tooltip:{callbacks:{title:i=>i[0].label,label:c=>' '+fmtS(c.raw)}}},scales:{x:{grid:{color:GRID},ticks:{color:'#a09890',callback:v=>fmtS(v)},beginAtZero:true},y:{grid:{display:false},ticks:{color:'#6b6458',font:{size:10}}}}}});
+  cCompare= new Chart(document.getElementById('cCompare'),{type:'line',data:{labels:MO,datasets:[]},options:{responsive:true,maintainAspectRatio:false,onClick(_,els){if(els.length)toggleMonth(els[0].index);},plugins:{legend:{position:'bottom',labels:{color:'#6b6458',padding:14,boxWidth:10,font:{size:11}}},tooltip:{callbacks:{label:c=>' '+c.dataset.label+': '+fmtS(c.raw)}}},scales:{x:scaleX,y:scaleY}}});
+}
+
+// ════════════════════════════════════════════════════════════════════════════════
+// CARGA DE CONSUMOS (repo dashboard-clientes)
+// ════════════════════════════════════════════════════════════════════════════════
+async function loadConsumos(){
+  setS('C','loading','Cargando consumos…');
+  ALL=[];
+  try{
+    try{
+      const buf=await getXlsx(BASE_CONS+'Lista.xlsx');
+      const wb=XLSX.read(buf,{type:'array'});
+      XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{header:1}).forEach(r=>{
+        if(r[0]&&r[1]&&r[0]!=='NEMO') NAMES[String(r[0]).trim()]=String(r[1]).trim();
+      });
+    }catch{}
+    let ok=0;
+    for(const {file,type} of DATA_FILES){
+      try{ ALL.push(...parseConsumosFile(await getXlsx(BASE_CONS+file),type)); ok++; }
+      catch(e){ console.warn('[Consumos]',file,e); }
+    }
+    if(!ok) throw new Error('Sin archivos de consumo');
+    setS('C','ok',`${ALL.length} clientes · ${ok}/3 archivos`);
+    populateDistFilter();
+    refresh();
+  }catch(e){ setS('C','err','Error: '+e.message); }
+}
+
+function parseConsumosFile(buf,type){
+  const wb=XLSX.read(buf,{type:'array'});
+  const rows=XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{header:1});
+  if(rows.length<3) return[];
+  return rows.slice(3).map(r=>{
+    const distNemo  =String(r[0]||'').trim();
+    const clientNemo=String(r[1]||'').trim();
+    if(!clientNemo||clientNemo==='nan') return null;
+    const monthly=Array.from({length:12},(_,i)=>{const v=r[i+2];return(v!=null&&v!==''&&!isNaN(v))?Number(v):null;});
+    const annual=r[14]!=null?Number(r[14]):null;
+    return{id:clientNemo,name:gname(clientNemo),type,dist:distNemo?gname(distNemo):'',monthly,annual};
+  }).filter(Boolean);
+}
+
+// ════════════════════════════════════════════════════════════════════════════════
+// CARGA DE CONTRATOS (repo dashboard-energia)
+// Secuencia: (1) datos base embebidos, (2) XLSX del repo, (3) contratos_nuevos.json
+// ════════════════════════════════════════════════════════════════════════════════
+async function loadContratos(){
+  document.getElementById('btnLoadContratos')||0; // no-op, botón ya no existe como antes
+  setS('K','loading','Conectando con repo…');
+
+  CONTRACTS = [...ALL_CONTRATOS_BASE];
+  const existingNums = new Set(CONTRACTS.map(c=>String(c['Nro contrato'])));
+  let xlsxLoaded = 0;
+  let jsonAdded  = 0;
+  const errores  = [];
+
+  // 1. XLSX de /data/contratos/
+  try{
+    setS('K','loading','Cargando archivos XLSX…');
+    const fetchResults = await Promise.allSettled(
+      CONTRATOS_FILES.map(f=>getXlsx(BASE_CONT+f).then(buf=>{
+        const wb=XLSX.read(buf,{type:'array',raw:true});
+        return{nombre:f,wb};
+      }))
+    );
+    fetchResults.forEach((r,i)=>{
+      if(r.status==='rejected'){
+        const msg=`${CONTRATOS_FILES[i]}: ${r.reason?.message||r.reason}`;
+        errores.push(msg);
+        console.warn('[Contratos] XLSX no cargado →',msg);
+      }
+    });
+    const wbsList = fetchResults.filter(r=>r.status==='fulfilled').map(r=>r.value);
+    xlsxLoaded = wbsList.length;
+    if(wbsList.length){
+      const {contratos, suministros} = parseContratosWorkbooks(wbsList);
+      contratos.forEach(c=>{
+        const nro=String(c['Nro contrato']);
+        if(!existingNums.has(nro)){ CONTRACTS.push(c); existingNums.add(nro); }
+        else{
+          const idx=CONTRACTS.findIndex(x=>String(x['Nro contrato'])===nro);
+          if(idx>=0){
+            if(c.tope_anual_mwh)  CONTRACTS[idx].tope_anual_mwh = c.tope_anual_mwh;
+            if(c.precio_usd)      CONTRACTS[idx].precio_usd     = c.precio_usd;
+            if(c.precio_display)  CONTRACTS[idx].precio_display  = c.precio_display;
+            if(c['TIPO RECURSO']) CONTRACTS[idx]['TIPO RECURSO'] = c['TIPO RECURSO'];
+          }
+        }
+      });
+      Object.assign(SUMINISTROS_BY_CONTRACT, suministros);
+      console.log(`[Contratos] XLSX: ${xlsxLoaded}/${CONTRATOS_FILES.length} · ${contratos.length} contratos`);
+    } else {
+      console.warn('[Contratos] Ningún XLSX cargado. Errores:', errores);
+    }
+  }catch(e){
+    errores.push('XLSX: '+e.message);
+    console.error('[Contratos] Error general en XLSX:', e);
+  }
+
+  // 2. contratos_nuevos.json desde /data/contratos/
+  try{
+    setS('K','loading','Leyendo contratos_nuevos.json…');
+    const jsonUrl=`${BASE_CONT}contratos_nuevos.json?t=${Date.now()}`;
+    const r=await fetch(jsonUrl);
+    if(r.ok){
+      const nuevos=await r.json();
+      if(Array.isArray(nuevos)&&nuevos.length){
+        nuevos.forEach(c=>{
+          const nro=String(c['Nro contrato']);
+          if(!existingNums.has(nro)){ CONTRACTS.push(c); existingNums.add(nro); jsonAdded++; }
+        });
+        console.log(`[Contratos] contratos_nuevos.json: +${jsonAdded} contratos`);
+      }
+    } else {
+      console.warn(`[Contratos] contratos_nuevos.json → HTTP ${r.status}`);
+    }
+  }catch(e){ console.warn('[Contratos] contratos_nuevos.json:', e.message); }
+
+  // 3. Estado final
+  const total = CONTRACTS.length;
+  if(total>0){
+    let msg = `${total} contratos`;
+    if(xlsxLoaded>0) msg += ` · ${xlsxLoaded}/${CONTRATOS_FILES.length} XLSX`;
+    else if(jsonAdded>0) msg += ` · solo JSON`;
+    else if(ALL_CONTRATOS_BASE.length>0) msg += ` · solo base embebida`;
+    if(errores.length&&xlsxLoaded===0) msg += ` ⚠`;
+    setS('K','ok',msg);
+  } else {
+    setS('K','err',`Sin contratos · verificá /data/contratos/ en el repo`);
+    console.error('[Contratos] Sin datos. Errores:', errores);
+  }
+  refresh();
+}
+
+// ── Parsear workbooks de contratos ───────────────────────────────────────────
+function parseContratosWorkbooks(wbsList){
+  const norm = s => String(s).normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/\s+/g,' ').trim();
+
+  let contratoRows=[], topeRows=[], suministroRows=[], parametrosRows=[];
+
+  wbsList.forEach(({nombre,wb})=>{
+    const sheet=wb.Sheets[wb.SheetNames[0]];
+    const json =XLSX.utils.sheet_to_json(sheet,{defval:null,raw:true});
+    if(!json.length) return;
+    const headers=Object.keys(json[0]);
+    const nh=headers.map(norm);
+
+    const hasTope        = nh.some(h=>h.includes('tope')&&h.includes('anual'));
+    const hasNroContrato = nh.some(h=>h.includes('nro')&&h.includes('contrato'));
+    const hasSuministro  = nh.some(h=>h.includes('suministro'));
+    const hasVendedor    = nh.some(h=>h==='vendedor');
+    const hasTipoContrato= nh.some(h=>h.includes('tipo')&&h.includes('contrato'));
+    const hasConj        = nh.some(h=>h.includes('conj')||(h.includes('conjunto')&&h.includes('generador')));
+    const hasParametro   = nh.some(h=>h.includes('parametro')||h.includes('parámetro'));
+    const hasValor       = nh.some(h=>h==='valor');
+    const esContratos    = hasNroContrato&&hasSuministro&&(hasVendedor||hasTipoContrato||hasConj);
+    const esParametros   = hasNroContrato&&hasParametro&&hasValor&&!esContratos;
+
+    if(esContratos)        contratoRows=json;
+    else if(hasTope)       topeRows=json;
+    else if(esParametros)  parametrosRows=json;
+    else if(hasSuministro&&!esContratos) suministroRows=json;
+  });
+
+  // Construir topeMap
+  const topeMap={};
+  topeRows.forEach(r=>{
+    const keys=Object.keys(r);
+    const findKey=(...cands)=>{for(const c of cands){const f=keys.find(k=>norm(k)===norm(c));if(f)return f;}return null;};
+    const nroKey =findKey('Contrato','Nro contrato','nro_contrato');
+    const tKey   =findKey('Tope anual [MWh]','tope_anual_mwh','Tope Anual MWh');
+    if(!nroKey||!tKey) return;
+    const nro=String(r[nroKey]||'').trim();
+    const t=parseFloat(r[tKey]);
+    if(nro&&!isNaN(t)&&t>0){if(!topeMap[nro]||t>topeMap[nro])topeMap[nro]=t;}
+  });
+
+  // Construir SUMINISTROS_BY_CONTRACT
+  const suministros={};
+  suministroRows.forEach(r=>{
+    const keys=Object.keys(r);
+    const findKey=(...cands)=>{for(const c of cands){const f=keys.find(k=>norm(k)===norm(c));if(f)return f;}return null;};
+    const nroKey=findKey('Contrato','Nro contrato','nro_contrato');
+    const suKey =findKey('Suministro','suministro','Suministro / grupo dem.');
+    if(!nroKey||!suKey) return;
+    const nro=String(r[nroKey]||'').trim();
+    const su =String(r[suKey] ||'').trim();
+    if(!nro||!su) return;
+    // Extraer NEMO entre paréntesis si lo hay, si no usar el valor directo
+    const match=su.match(/\(([^)]+)\)/);
+    const nemo=(match?match[1]:su).trim().toUpperCase();
+    if(!suministros[nro]) suministros[nro]=[];
+    if(!suministros[nro].includes(nemo)) suministros[nro].push(nemo);
+  });
+
+  // Construir parametrosMap: nro → { precio_usd, precio_display, tope_proporcional }
+  const parametrosMap={};
+  parametrosRows.forEach(r=>{
+    const keys=Object.keys(r);
+    const findKey=(...cands)=>{for(const c of cands){const f=keys.find(k=>norm(k)===norm(c));if(f)return f;}return null;};
+    const nroKey   =findKey('Nro contrato','Contrato','nro_contrato');
+    const paramKey =findKey('Parámetro','Parametro','parametro','parámetro');
+    const valorKey =findKey('Valor','valor');
+    if(!nroKey||!paramKey||!valorKey) return;
+    const nro   =String(r[nroKey]||'').trim();
+    const param =norm(String(r[paramKey]||''));
+    const valor =String(r[valorKey]||'').trim();
+    if(!nro||!param||!valor) return;
+    if(!parametrosMap[nro]) parametrosMap[nro]={};
+    // Precio de energía → extraer número
+    if(param.includes('precio')&&param.includes('energ')){
+      const num=parseFloat(valor.replace(',','.'));
+      if(!isNaN(num)){
+        parametrosMap[nro].precio_usd=num;
+        parametrosMap[nro].precio_display=valor; // conservar string original "63 U$S/MWh"
+      }
+    }
+    // Proporcional al tope
+    if(param.includes('regla')&&norm(valor).includes('proporcional')){
+      parametrosMap[nro].tope_proporcional=true;
+    }
+  });
+
+  // Normalizar contratos
+  const contratos=contratoRows.map(r=>normalizeContratoRow(r,topeMap,parametrosMap)).filter(c=>c['Nro contrato']);
+  return{contratos, suministros};
+}
+
+function normalizeContratoRow(row, topeMap, parametrosMap={}){
+  const keys=Object.keys(row);
+  const norm=s=>String(s).normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/\s+/g,' ').trim();
+  const get=(...cands)=>{
+    for(const c of cands){const ex=keys.find(k=>k===c);if(ex&&row[ex]!=null)return row[ex];}
+    for(const c of cands){const f=keys.find(k=>norm(k)===norm(c));if(f&&row[f]!=null)return row[f];}
+    return null;
+  };
+  const nro=String(get('Nro contrato','nro_contrato','Contrato')||'').trim();
+  const inicioDate=parseExcelDate(get('Inicio','inicio','INICIO','fecha_inicio','inicio_str'));
+  const finDate   =parseExcelDate(get('Fin','fin','FIN','fecha_fin','fin_str'));
+  const nroNorm=nro.replace(/^0+/,'');
+  const tope=topeMap&&(topeMap[nro]||topeMap[nroNorm])||null;
+  const params=parametrosMap[nro]||parametrosMap[nroNorm]||{};
+  return{
+    'Nro contrato':           nro,
+    'Vendedor':               get('Vendedor','vendedor','VENDEDOR'),
+    'Suministro / grupo dem.':get('Suministro / grupo dem.','Suministro','suministro'),
+    'Conj. Generador':        get('Conj. Generador','Generador','generador','Conj Generador'),
+    'TIPO RECURSO':           get('TIPO RECURSO','Tipo recurso','tipo_recurso')||'',
+    'inicio_str':             dateToStr(inicioDate),
+    'fin_str':                dateToStr(finDate),
+    'precio_usd':             params.precio_usd||null,
+    'precio_display':         params.precio_display||null,
+    'Tipo contrato':          get('Tipo contrato','tipo_contrato','TipoContrato'),
+    'tope_anual_mwh':         tope,
+    'tope_proporcional':      params.tope_proporcional||false,
+  };
+}
+
+function parseExcelDate(val){
+  if(!val&&val!==0) return null;
+  if(typeof val==='number') return new Date(Date.UTC(1900,0,1)+(val-2)*86400000);
+  if(typeof val==='string'){const d=new Date(val);if(!isNaN(d))return d;}
+  return null;
+}
+function dateToStr(d){
+  if(!d) return null;
+  return`${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,'0')}-${String(d.getUTCDate()).padStart(2,'0')}`;
+}
+
+// ════════════════════════════════════════════════════════════════════════════════
+// LOOKUP GU ↔ CONTRATOS
+// ════════════════════════════════════════════════════════════════════════════════
+
+// Extrae el NEMO de un campo suministro: "(DANOLOCY) DANONE S.A." → "DANOLOCY"
+// Si no hay paréntesis, devuelve el valor completo en uppercase.
+function extractNemoFromSuministro(su){
+  if(!su) return '';
+  const match = String(su).match(/^\s*\(([^)]+)\)/);
+  return (match ? match[1] : String(su)).trim().toUpperCase();
+}
+
+function getContractsByNemo(nemo){
+  const nUp=nemo.toUpperCase();
+  const direct=CONTRACTS.filter(c=>extractNemoFromSuministro(c['Suministro / grupo dem.'])===nUp);
+  const grupales=CONTRACTS.filter(c=>{
+    const tc=(c['Tipo contrato']||'').toLowerCase();
+    if(!tc.includes('grupal')) return false;
+    if(direct.some(d=>d['Nro contrato']===c['Nro contrato'])) return false;
+    return getPuntosSuministro(c['Nro contrato']).some(p=>p.toUpperCase()===nUp);
+  });
+  return{direct,grupales,all:[...direct,...grupales]};
+}
+
+function getPuntosSuministro(nroContrato){
+  const nroStr=String(nroContrato);
+  const nroNorm=nroStr.replace(/^0+/,'');
+  return SUMINISTROS_BY_CONTRACT[nroStr]||SUMINISTROS_BY_CONTRACT[nroNorm]||[];
+}
+
+function countContracts(nemo){ return CONTRACTS.length?getContractsByNemo(nemo).all.length:0; }
+function hasContracts(nemo)  { return countContracts(nemo)>0; }
+function isGrupalMember(nemo){ return CONTRACTS.length?getContractsByNemo(nemo).grupales.length>0:false; }
+
+const _TODAY = new Date().toISOString().slice(0,10); // YYYY-MM-DD, fijo en sesión
+function volumenVigente(nemo){
+  if(!CONTRACTS.length) return 0;
+  const {all} = getContractsByNemo(nemo);
+  return all.reduce((s,c)=>{
+    const ini = c.inicio_str||'';
+    const fin = c.fin_str||'';
+    const vigente = (!ini||ini<=_TODAY) && (!fin||fin>=_TODAY);
+    return s + (vigente && c.tope_anual_mwh && !c.tope_proporcional ? c.tope_anual_mwh : 0);
+  },0);
+}
+
+// ════════════════════════════════════════════════════════════════════════════════
+// FILTERING & SORTING (consumos)
+// ════════════════════════════════════════════════════════════════════════════════
+function filtered(){
+  const q=aTerm.toLowerCase();
+  return ALL.filter(d=>{
+    if(aType!=='all'&&d.type!==aType) return false;
+    if(aDist&&d.dist!==aDist) return false;
+    if(aOnlyContracts&&!hasContracts(d.id)) return false;
+    if(aOnlySinContratos&&hasContracts(d.id)) return false;
+    if(q&&!d.id.toLowerCase().includes(q)&&!d.name.toLowerCase().includes(q)) return false;
+    if(CF.name&&!d.name.toLowerCase().includes(CF.name)) return false;
+    if(CF.nemo&&!d.id.toLowerCase().includes(CF.nemo)) return false;
+    if(CF.type&&!d.type.toLowerCase().includes(CF.type)) return false;
+    if(CF.dist&&!d.dist.toLowerCase().includes(CF.dist)) return false;
+    if(CF.annMin!=null&&(d.annual||0)<CF.annMin) return false;
+    if(CF.annMax!=null&&(d.annual||0)>CF.annMax) return false;
+    for(let i=0;i<12;i++) if(CF['m'+i]!=null&&(d.monthly[i]||0)<CF['m'+i]) return false;
+    return true;
+  });
+}
+
+function setType(t){ aType=t; syncFilterUI(); refresh(); }
+function toggleFilterContracts(){
+  aOnlyContracts=!aOnlyContracts;
+  if(aOnlyContracts) aOnlySinContratos=false;
+  document.getElementById('btnFilterContracts').classList.toggle('active',aOnlyContracts);
+  document.getElementById('btnFilterSinContratos').classList.remove('active');
+  refresh();
+}
+function toggleFilterSinContratos(){
+  aOnlySinContratos=!aOnlySinContratos;
+  if(aOnlySinContratos) aOnlyContracts=false;
+  document.getElementById('btnFilterSinContratos').classList.toggle('active',aOnlySinContratos);
+  document.getElementById('btnFilterContracts').classList.remove('active');
+  refresh();
+}
+function toggleMonth(mi){
+  aMonth=(aMonth===mi)?null:mi;
+  const tag=document.getElementById('mTag'),lbl=document.getElementById('mTagLbl');
+  if(aMonth!==null){tag.classList.add('on');lbl.textContent='Mes: '+MO[aMonth];}
+  else tag.classList.remove('on');
+  refresh();
+}
+function clearMonth(){ aMonth=null; document.getElementById('mTag').classList.remove('on'); refresh(); }
+function sortBy(k){ if(sKey===k)sDir*=-1;else{sKey=k;sDir=-1;} updSortH(); refresh(); }
+function sortByM(i){ sortBy('m'+i); }
+function sortedData(data){
+  return[...data].sort((a,b)=>{
+    if(sKey==='name')   return a.name.localeCompare(b.name)*sDir;
+    if(sKey==='id')     return a.id.localeCompare(b.id)*sDir;
+    if(sKey==='type')   return a.type.localeCompare(b.type)*sDir;
+    if(sKey==='dist')   return(a.dist||'').localeCompare(b.dist||'')*sDir;
+    if(sKey==='annual') return((b.annual||0)-(a.annual||0))*sDir;
+    if(sKey.startsWith('m')){ const i=parseInt(sKey.slice(1)); return((b.monthly[i]??-1)-(a.monthly[i]??-1))*sDir; }
+    return 0;
+  });
+}
+function colFilter(){
+  CF={};
+  const gf=id=>{const v=document.getElementById(id)?.value.trim().toLowerCase();return v||null;};
+  const gn=id=>{const v=parseFloat(document.getElementById(id)?.value);return isNaN(v)?null:v;};
+  const fn=gf('fName');if(fn)CF.name=fn;
+  const fno=gf('fNemo');if(fno)CF.nemo=fno;
+  const ft=gf('fType');if(ft)CF.type=ft;
+  const fd=gf('fDist');if(fd)CF.dist=fd;
+  const faMin=gn('fAnnMin');if(faMin!=null)CF.annMin=faMin;
+  const faMax=gn('fAnnMax');if(faMax!=null)CF.annMax=faMax;
+  for(let i=0;i<12;i++){const v=gn('fm'+i);if(v!=null)CF['m'+i]=v;}
+  refresh();
+}
+function toggleCols(){ showM=!showM; const btn=document.getElementById('btnCols'); btn.textContent=showM?'Ocultar meses':'Mostrar meses'; btn.classList.toggle('on',!showM); applyColVis(); }
+function applyColVis(){ document.querySelectorAll('#tbl .col-m').forEach(el=>{el.style.display=showM?'':'none';}); document.getElementById('tbl').classList.toggle('compact',!showM); }
+
+// ════════════════════════════════════════════════════════════════════════════════
+// REFRESH & RENDER
+// ════════════════════════════════════════════════════════════════════════════════
+function refresh(){
+  const data=filtered();
+  updStats(data); updTable(data);
+  updClientChart(data); updMonthly(data);
+  updType(data); updRanking(data); updCompare(data);
+}
+
+function updStats(data){
+  const total=data.reduce((s,d)=>s+(d.annual||0),0);
+  const avg=data.length?total/data.length:0;
+  const mx=data.reduce((b,d)=>(d.annual||0)>(b.annual||0)?d:b,data[0]||{});
+  const withC=data.filter(d=>hasContracts(d.id)).length;
+  set('stTotal',fmtS(total)); set('stAvg',fmtS(avg));
+  set('stCount',data.length); set('stCountS',`de ${ALL.length} totales`);
+  set('stContracts',CONTRACTS.length?withC:'—');
+  set('stContractsSub',CONTRACTS.length?`de ${data.length} en vista`:'Sincronizá contratos');
+  if(mx?.id){set('stMaxV',fmtS(mx.annual));set('stMaxN',mx.name);}
+}
+
+// ════════════════════════════════════════════════════════════════════════════════
+// VIRTUAL TABLE RENDERING
+// ════════════════════════════════════════════════════════════════════════════════
+const ROW_H  = 41;   // altura de fila en px (ajustar si cambia el padding)
+const BUFFER = 10;   // filas extra arriba y abajo del viewport visible
+let _vtRows  = [];   // dataset completo ordenado para la tabla
+let _vtStart = 0;    // primer índice renderizado
+
+function buildRowHtml(d){
+  const mCells = d.monthly.map((v,i)=>`<td class="col-m${i===aMonth?' mhi':''}">${v!=null?fmt(v):'—'}</td>`).join('');
+  const cnt    = countContracts(d.id);
+  const grupal = isGrupalMember(d.id);
+  let contractCell;
+  if(cnt>0){
+    const cls    = grupal?'grouped':'';
+    const icon   = grupal?'⋯':'◉';
+    const vol    = volumenVigente(d.id);
+    const volStr = vol>0?` · ${fmtMwh(vol)}`:'';
+    const title  = grupal
+      ? `Incluido en demanda grupal · ${cnt} contrato(s)${volStr}`
+      : `${cnt} contrato(s) directo(s)${volStr}`;
+    contractCell = `<td class="td-contracts"><span class="contract-badge ${cls}" onclick="openPanel(event,'${d.id}')" title="${title}">${icon} ${cnt}${vol>0?`<span class="badge-vol">${fmtMwh(vol)}</span>`:''}</span></td>`;
+  } else {
+    contractCell = `<td class="td-contracts"><span class="no-contract">—</span></td>`;
+  }
+  return `<tr class="${selectedNemo===d.id?'selected':''}" onclick="rowSelect(event,'${d.id}')">
+    <td class="td-name" title="${d.name}">${d.name}</td>
+    <td class="td-nemo">${d.id}</td>
+    <td class="td-type"><span class="type-badge badge-${d.type}">${d.type}</span></td>
+    <td class="td-dist" title="${d.dist}">${d.dist||'—'}</td>
+    ${contractCell}${mCells}
+    <td class="ann">${fmt(d.annual)}</td>
+  </tr>`;
+}
+
+function vtRender(scrollTop){
+  const tb       = document.getElementById('tBody');
+  const total    = _vtRows.length;
+  if(!total){ tb.innerHTML=`<tr><td colspan="18" class="empty">Sin resultados</td></tr>`; return; }
+
+  const visCount = Math.ceil(520/ROW_H);           // filas visibles en 520px
+  const start    = Math.max(0, Math.floor(scrollTop/ROW_H) - BUFFER);
+  const end      = Math.min(total, start + visCount + BUFFER*2);
+  _vtStart       = start;
+
+  const padTop   = start * ROW_H;
+  const padBot   = (total - end) * ROW_H;
+
+  let html = '';
+  if(padTop>0)  html += `<tr class="vt-pad" style="height:${padTop}px"><td colspan="18"></td></tr>`;
+  for(let i=start;i<end;i++) html += buildRowHtml(_vtRows[i]);
+  if(padBot>0)  html += `<tr class="vt-pad" style="height:${padBot}px"><td colspan="18"></td></tr>`;
+
+  tb.innerHTML = html;
+  applyColVis();
+}
+
+function updTable(data){
+  _vtRows = sortedData(data);
+  set('tblMeta', _vtRows.length+' clientes');
+  const wrap = document.getElementById('tableWrap');
+  vtRender(wrap ? wrap.scrollTop : 0);
+}
+
+function rowSelect(e,nemo){
+  if(countContracts(nemo)>0) openPanel(e,nemo);
+}
+
+// ════════════════════════════════════════════════════════════════════════════════
+// SIDE PANEL
+// ════════════════════════════════════════════════════════════════════════════════
+function openPanel(e,nemo){
+  e.stopPropagation();
+  selectedNemo=nemo;
+  const gu=ALL.find(d=>d.id===nemo);
+  const name=gu?gu.name:nemo;
+  document.getElementById('panelClientName').textContent=name;
+  document.getElementById('panelClientNemo').textContent=nemo;
+  document.getElementById('sidePanel').classList.add('open');
+  document.getElementById('panelOverlay').classList.add('show');
+  document.body.classList.add('panel-open');
+  refresh();
+  renderPanel(nemo);
+}
+
+function closePanel(){
+  selectedNemo=null;
+  document.getElementById('sidePanel').classList.remove('open');
+  document.getElementById('panelOverlay').classList.remove('show');
+  document.body.classList.remove('panel-open');
+  refresh();
+}
+
+function renderPanel(nemo){
+  const panelBody=document.getElementById('panelBody');
+  panelBody.innerHTML='<div class="panel-loading">Preparando contratos…</div>';
+  const{direct,grupales,all}=getContractsByNemo(nemo);
+  if(!all.length){ panelBody.innerHTML='<div class="panel-empty">Sin contratos registrados.</div>'; return; }
+
+  const totalVol=all.reduce((s,c)=>s+(c.tope_anual_mwh||0),0);
+  const prices=all.map(c=>c.precio_usd).filter(v=>v!=null);
+  const avgPrice=prices.length?prices.reduce((a,b)=>a+b,0)/prices.length:null;
+
+  let html=`<div class="panel-stats">
+    <div class="panel-stat"><div class="panel-stat-lbl">Contratos</div><div class="panel-stat-val c-blue">${all.length}</div></div>
+    <div class="panel-stat"><div class="panel-stat-lbl">Vol. anual</div><div class="panel-stat-val c-green">${fmtMwh(totalVol)}</div></div>
+    <div class="panel-stat"><div class="panel-stat-lbl">Precio prom.</div><div class="panel-stat-val c-amber">${avgPrice!=null?avgPrice.toFixed(1)+' U$S':'—'}</div></div>
+  </div>`;
+
+  if(direct.length){
+    html+=`<div class="panel-section-title">Contratos directos · ${direct.length}</div>`;
+    html+=direct.map(c=>renderContractCard(c,nemo,false)).join('');
+  }
+  if(grupales.length){
+    html+=`<div class="panel-section-title" style="margin-top:${direct.length?'20px':'0'}">Demanda grupal · ${grupales.length} contrato(s)</div>`;
+    html+=grupales.map(c=>renderContractCard(c,nemo,true)).join('');
+  }
+  panelBody.innerHTML=html;
+}
+
+function renderContractCard(c,highlightNemo,isGrupalMember){
+  const tipo=c['TIPO RECURSO'];
+  const tcls=tipo==='Renovable'?'ctag-r':tipo==='No Renovable'?'ctag-nr':'ctag-na';
+  const su=c['Suministro / grupo dem.']||'—';
+  const vn=CUIT_NAMES[c['Vendedor']]||c['Vendedor']||'—';
+  const gen=c['Conj. Generador']||'—';
+  const tc=c['Tipo contrato']||'—';
+  const esGrupal=(tc.toLowerCase().includes('grupal'));
+  const prDisplay=c.precio_display||(c.precio_usd!=null?c.precio_usd.toFixed(1)+' U$S/MWh':null);
+  const hasDte=prDisplay&&prDisplay.toUpperCase().includes('DTE');
+  const prStr=prDisplay||(esGrupal?'Ver contrato':'—');
+
+  let nemoSection='';
+  if(esGrupal){
+    const ps=getPuntosSuministro(c['Nro contrato']);
+    if(ps.length){
+      const tags=ps.map(n=>{const hi=n.toUpperCase()===highlightNemo.toUpperCase();return`<span class="nemo-tag${hi?' highlight':''}">${n}</span>`;}).join('');
+      nemoSection=`<div class="nemo-list"><div class="nemo-list-title">NEMOs en el grupo (${ps.length})</div><div class="nemo-tags">${tags}</div></div>`;
+    }
+  }
+
+  const volStr=c.tope_proporcional
+    ? '<span style="font-size:10px;color:var(--amber);font-style:italic">Proporcional</span>'
+    : c.tope_anual_mwh!=null?fmtMwh(c.tope_anual_mwh)+'/año':'—';
+  const mLabel=c.n_meses&&c.n_meses<12?` <span style="font-size:9px;color:var(--blue-text);background:var(--blue-bg);border-radius:3px;padding:0 3px">(${c.n_meses}m)</span>`:'';
+
+  return`<div class="contract-card">
+    <div class="contract-card-header">
+      <div>
+        <div class="contract-num">Nro ${c['Nro contrato']}</div>
+        <div class="contract-gen">${gen}</div>
+        <div class="contract-tags">
+          <span class="ctag ${tcls}">${tipo||'Sin tipo'}</span>
+          ${esGrupal?'<span class="ctag ctag-g">Dem. grupal</span>':''}
+          ${isGrupalMember?'<span class="ctag ctag-inc">Incluido</span>':''}
+        </div>
+      </div>
+    </div>
+    <div class="contract-grid">
+      <div class="cg-item"><div class="cg-lbl">Suministro / Grupo</div><div class="cg-val" title="${su}">${su}</div></div>
+      <div class="cg-item"><div class="cg-lbl">Vendedor</div><div class="cg-val" title="${vn}">${vn}</div></div>
+      <div class="cg-item"><div class="cg-lbl">Inicio</div><div class="cg-val">${c.inicio_str||'—'}</div></div>
+      <div class="cg-item"><div class="cg-lbl">Fin</div><div class="cg-val">${c.fin_str||'—'}</div></div>
+      <div class="cg-item"><div class="cg-lbl">Precio</div><div class="cg-val ${hasDte?'c-amber':''}" ${hasDte?'title="'+prDisplay+'"':''}>${prStr}</div></div>
+      <div class="cg-item"><div class="cg-lbl">Vol. anual</div><div class="cg-val">${volStr}${mLabel}</div></div>
+      <div class="cg-item" style="grid-column:span 2"><div class="cg-lbl">Tipo de contrato</div><div class="cg-val">${tc}</div></div>
+    </div>
+    ${nemoSection}
+  </div>`;
+}
+
+// ════════════════════════════════════════════════════════════════════════════════
+// CHARTS UPDATE
+// ════════════════════════════════════════════════════════════════════════════════
+function updClientChart(data){
+  const ds=[];
+  if(data.length){
+    const totals=Array(12).fill(0).map((_,i)=>data.reduce((s,d)=>s+(d.monthly[i]||0),0));
+    ds.push({label:'Total',data:totals,borderColor:'#1a1612',backgroundColor:'rgba(26,22,18,0.06)',borderWidth:2.5,fill:true,tension:0.4,pointRadius:4,pointHoverRadius:7,pointBackgroundColor:totals.map((_,i)=>i===aMonth?'#c4382a':'#1a1612'),pointBorderColor:'transparent'});
+  }
+  cClient.data.datasets=ds; cClient.update();
+  const n=data.length;
+  set('profileMeta',n?`${n} cliente${n>1?'s':''} · click para filtrar mes`:'');
+}
+function updMonthly(data){
+  const tot=Array(12).fill(0);
+  data.forEach(d=>d.monthly.forEach((v,i)=>{if(v!=null)tot[i]+=v;}));
+  const clrs=MO.map((_,i)=>{if(i===aMonth)return'#1a1612';const bt={GUMA:0,GUME:0,GUDI:0};data.forEach(d=>{if(d.monthly[i]!=null)bt[d.type]=(bt[d.type]||0)+d.monthly[i];});return TBG[Object.entries(bt).sort((a,b)=>b[1]-a[1])[0][0]]||'#a09890';});
+  cMonthly.data.datasets=[{data:tot,backgroundColor:clrs,borderColor:clrs.map((_,i)=>i===aMonth?'#1a1612':'transparent'),borderWidth:2,borderRadius:4}];
+  cMonthly.update();
+  set('mlyMeta','total: '+fmtS(tot.reduce((a,b)=>a+b,0)));
+}
+function updType(data){
+  const v={GUMA:0,GUME:0,GUDI:0};
+  data.forEach(d=>{v[d.type]=(v[d.type]||0)+(d.annual||0);});
+  cType.data={labels:['GUMA','GUME','GUDI'],datasets:[{data:[v.GUMA,v.GUME,v.GUDI],backgroundColor:[TBG.GUMA,TBG.GUME,TBG.GUDI],borderColor:[TC.GUMA,TC.GUME,TC.GUDI],borderWidth:2,hoverOffset:6}]};
+  cType.update();
+}
+function updRanking(data){
+  const key=aMonth;
+  const rows=[...data].sort((a,b)=>{const va=key!==null?(a.monthly[key]||0):(a.annual||0);const vb=key!==null?(b.monthly[key]||0):(b.annual||0);return vb-va;}).slice(0,10);
+  cRanking._rows=rows;
+  cRanking.data={labels:rows.map(d=>{const n=d.name;return n.length>26?n.slice(0,26)+'…':n;}),datasets:[{data:rows.map(d=>key!==null?d.monthly[key]||0:d.annual||0),backgroundColor:rows.map(d=>TBG[d.type]),borderColor:rows.map(d=>TC[d.type]),borderWidth:1,borderRadius:3}]};
+  cRanking.update();
+  set('rkMeta',key!==null?`mes: ${MO[key]} · click para filtrar`:'anual · click para filtrar');
+}
+function updCompare(data){
+  const types=[...new Set(data.map(d=>d.type))];
+  cCompare.data.labels=MO;
+  cCompare.data.datasets=types.map(t=>{const sub=data.filter(d=>d.type===t);return{label:t,data:Array(12).fill(0).map((_,i)=>sub.reduce((s,d)=>s+(d.monthly[i]||0),0)),borderColor:TC[t],backgroundColor:TC[t]+'18',borderWidth:2,fill:false,tension:0.4,pointRadius:3,pointHoverRadius:6};});
+  cCompare.update();
+}
+
+// ════════════════════════════════════════════════════════════════════════════════
+// EXPORT, UTILS, SYNC UI
+// ════════════════════════════════════════════════════════════════════════════════
+function exportExcel(){
+  const data=sortedData(filtered());
+  if(!data.length){alert('No hay datos para exportar.');return;}
+  const header=['Nombre','NEMO','Tipo','Distribuidor','Contratos',...MO.map(m=>m+' (MWh)'),'Anual (MWh)'];
+  const rows=data.map(d=>[d.name,d.id,d.type,d.dist,countContracts(d.id),...d.monthly.map(v=>v!=null?v:''),d.annual!=null?d.annual:'']);
+  const ws=XLSX.utils.aoa_to_sheet([header,...rows]);
+  ws['!cols']=[{wch:30},{wch:12},{wch:8},{wch:30},{wch:10},...Array(12).fill({wch:10}),{wch:12}];
+  const wb=XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb,ws,'Consumo');
+  XLSX.writeFile(wb,'grandes_usuarios.xlsx');
+}
+
+function fmtMwh(v){
+  if(!v) return'—';
+  if(v>=1e6) return(v/1e6).toFixed(2).replace('.',',')+' TWh';
+  if(v>=1e3) return(v/1e3).toFixed(1).replace('.',',')+' GWh';
+  return v.toLocaleString('es-AR',{maximumFractionDigits:1})+' MWh';
+}
+function fmt(n){ if(n==null||isNaN(n))return'—'; return Math.round(n).toLocaleString('es-AR'); }
+function fmtS(n){ if(n==null||isNaN(n))return'—'; if(n>=1e6)return(n/1e6).toFixed(2)+' TWh'; if(n>=1e3)return(n/1e3).toFixed(2)+' GWh'; return n.toFixed(1)+' MWh'; }
+function set(id,v){ const el=document.getElementById(id);if(el)el.textContent=v; }
+function setS(which,type,msg){
+  document.getElementById('sDot'+which).className='status-dot'+(type?' '+type:'');
+  set('sTxt'+which,msg);
+}
+
+const CACHE_VERSION = 'mem_cache_v1';
+
+async function getXlsx(url){
+  const key = CACHE_VERSION + '_' + url;
+  try {
+    const cached = sessionStorage.getItem(key);
+    if(cached){
+      const bin = atob(cached);
+      const arr = new Uint8Array(bin.length);
+      for(let i=0;i<bin.length;i++) arr[i]=bin.charCodeAt(i);
+      return arr;
+    }
+  } catch(e){ /* sessionStorage lleno o bloqueado */ }
+
+  const r = await fetch(url);
+  if(!r.ok) throw new Error('HTTP '+r.status);
+  const arr = new Uint8Array(await r.arrayBuffer());
+
+  try {
+    let bin = '';
+    for(let i=0;i<arr.length;i++) bin += String.fromCharCode(arr[i]);
+    sessionStorage.setItem(key, btoa(bin));
+  } catch(e){ /* quota exceeded, ignorar */ }
+
+  return arr;
+}
+
+function populateDistFilter(){
+  const dists=[...new Set(ALL.map(d=>d.dist).filter(Boolean))].sort();
+  ['distSelect','distSelectTbl'].forEach(id=>{
+    const sel=document.getElementById(id);
+    sel.innerHTML='<option value="">Todos</option>';
+    dists.forEach(d=>{const o=document.createElement('option');o.value=d;o.textContent=d;sel.appendChild(o);});
+  });
+}
+function setDistFilter(val){ aDist=val; syncFilterUI(); refresh(); }
+
+function updSortH(){
+  document.querySelectorAll('#sortRow th').forEach(th=>{const active=th.dataset.k===sKey;th.classList.toggle('sorted',active);if(active)th.dataset.arrow=sDir===-1?'↓':'↑';});
+}
+
+function syncFilterUI(){
+  document.querySelectorAll('.filter-btn[data-type]').forEach(b=>b.classList.toggle('active',b.dataset.type===aType));
+  document.querySelectorAll('.filter-btn[data-ttype]').forEach(b=>b.classList.toggle('active',b.dataset.ttype===aType));
+  document.getElementById('distSelect').value    =aDist;
+  document.getElementById('distSelectTbl').value =aDist;
+  document.getElementById('distSelect').classList.toggle('active',!!aDist);
+  document.getElementById('distSelectTbl').classList.toggle('active',!!aDist);
+  document.getElementById('searchInput').value=aTerm;
+  document.getElementById('tblSearch').value  =aTerm;
+}
+
+function setTypeTbl(t){ aType=t; syncFilterUI(); refresh(); }
+function setDistFilterTbl(val){ aDist=val; syncFilterUI(); refresh(); }
+function setTermTbl(val){ aTerm=val; syncFilterUI(); refresh(); }
+
+// Column resize
+function initColResize(){
+  const tbl=document.getElementById('tbl');
+  // No fijar table-layout:fixed en el boot — la tabla arranca con auto (ancho completo).
+  // Se fija a fixed solo cuando el usuario empieza a arrastrar una columna.
+  tbl.querySelectorAll('.col-resizer').forEach(resizer=>{
+    const th=resizer.parentElement;
+    let startX,startW;
+    resizer.addEventListener('mousedown',e=>{
+      e.preventDefault();e.stopPropagation();
+      // Al primer drag, tomamos los anchos actuales y fijamos layout
+      if(tbl.style.tableLayout!=='fixed'){
+        tbl.style.tableLayout='fixed';
+        [...tbl.querySelectorAll('tr.sort-row th')].forEach(t=>{
+          t.style.width=t.offsetWidth+'px';
+          t.style.minWidth='40px';
+        });
+      }
+      startX=e.clientX;startW=th.offsetWidth;
+      resizer.classList.add('dragging');
+      document.body.style.cursor='col-resize';document.body.style.userSelect='none';
+      const onMove=e=>{th.style.width=Math.max(40,startW+(e.clientX-startX))+'px';};
+      const onUp=()=>{resizer.classList.remove('dragging');document.body.style.cursor='';document.body.style.userSelect='';document.removeEventListener('mousemove',onMove);document.removeEventListener('mouseup',onUp);};
+      document.addEventListener('mousemove',onMove);
+      document.addEventListener('mouseup',onUp);
+    });
+  });
+}
+
+// ── EVENTS ────────────────────────────────────────────────────────────────────
+document.getElementById('searchInput').addEventListener('input',e=>{aTerm=e.target.value;syncFilterUI();refresh();});
+document.querySelectorAll('.filter-btn[data-type]').forEach(b=>b.addEventListener('click',()=>setType(b.dataset.type)));
+document.addEventListener('keydown',e=>{if(e.key==='Escape')closePanel();});
+document.getElementById('tableWrap').addEventListener('scroll',function(){ vtRender(this.scrollTop); }, {passive:true});
+
+// ── BOOT ─────────────────────────────────────────────────────────────────────
+initCharts();
+initColResize();
+updSortH();
+
+// Precargar datos base embebidos de contratos
+CONTRACTS=[...ALL_CONTRATOS_BASE];
+if(CONTRACTS.length){
+  setS('K','ok',`${CONTRACTS.length} contratos (base embebida)`);
+} else {
+  setS('K','loading','Conectando…');
+}
+
+function loadAll(){ loadConsumos(); loadContratos(); }
+
+// Cargar todo al iniciar
+loadAll();
+
+// ════════════════════════════════════════════════════════════════════════════════
+// SECCIÓN DE ACTUALIZACIÓN DE CONTRATOS — slot único, subida automática
+// ════════════════════════════════════════════════════════════════════════════════
+
+const UPLOAD_FILES = [
+  'CONTRATOS.xlsx',
+  'TOPES.xlsx',
+  'SUMINISTROS.xlsx',
+  'PARAMETROS_VARIABLES.xlsx',
+  'CARACTERISTICAS.xlsx',
+];
+
+function getISOWeek(date){
+  const d=new Date(Date.UTC(date.getFullYear(),date.getMonth(),date.getDate()));
+  const day=d.getUTCDay()||7;
+  d.setUTCDate(d.getUTCDate()+4-day);
+  const yearStart=new Date(Date.UTC(d.getUTCFullYear(),0,1));
+  return{week:Math.ceil((((d-yearStart)/86400000)+1)/7),year:d.getUTCFullYear()};
+}
+
+function uploadDragOver(e){ e.preventDefault(); document.getElementById('uploadSingle').classList.add('drag-over'); }
+function uploadDragLeave(e){ document.getElementById('uploadSingle').classList.remove('drag-over'); }
+function uploadDrop(e){
+  e.preventDefault();
+  document.getElementById('uploadSingle').classList.remove('drag-over');
+  processUploadFiles([...e.dataTransfer.files]);
+}
+function uploadChange(e){ processUploadFiles([...e.target.files]); }
+
+function addLog(msg,type='info'){
+  const log=document.getElementById('uploadLog');
+  log.classList.add('show');
+  log.innerHTML+=`<div class="log-${type}">${msg}</div>`;
+  log.scrollTop=log.scrollHeight;
+}
+
+function setUploadState(state,title){
+  const el=document.getElementById('uploadSingle');
+  el.className='upload-single'+(state?' '+state:'');
+  if(title) document.getElementById('uploadTitle').textContent=title;
+}
+
+function updateFileTags(found){
+  const list=document.getElementById('uploadFileList');
+  list.innerHTML=UPLOAD_FILES.map(f=>{
+    const cls=found[f]===true?'ok':found[f]===false?'err':'';
+    return`<span class="upload-file-tag ${cls}">${f}</span>`;
+  }).join('');
+}
+
+async function processUploadFiles(files){
+  const log=document.getElementById('uploadLog');
+  log.innerHTML=''; log.classList.add('show');
+
+  const byName={};
+  files.forEach(f=>{ byName[f.name.trim()]=f; byName[f.name.trim().toLowerCase()]=f; });
+
+  const found={};
+  const fileBuffers={};
+  const missing=[];
+
+  for(const fname of UPLOAD_FILES){
+    const f=byName[fname]||byName[fname.toLowerCase()];
+    if(f){
+      const buf=await f.arrayBuffer();
+      const arr=new Uint8Array(buf);
+      if(arr[0]!==0x50||arr[1]!==0x4B){
+        found[fname]=false;
+        addLog(`✗ ${fname} no es un XLSX válido`,'err');
+      } else {
+        found[fname]=true;
+        fileBuffers[fname]=arr;
+      }
+    } else {
+      found[fname]=null;
+      missing.push(fname);
+    }
+  }
+  updateFileTags(found);
+
+  if(missing.length){
+    setUploadState('error',`Faltan ${missing.length} archivo(s): ${missing.join(', ')}`);
+    return;
+  }
+  if(Object.values(found).some(v=>v===false)){
+    setUploadState('error','Algunos archivos no son XLSX válidos');
+    return;
+  }
+
+  setUploadState('uploading','Subiendo al repo…');
+  const now=new Date();
+  const {week,year}=getISOWeek(now);
+  const weekStr=`Semana ${week} / ${year}`;
+  const dateStr=now.toISOString().slice(0,10);
+  const commitMsg=`Actualización contratos — ${weekStr} (${dateStr})`;
+  let errCount=0;
+
+  for(const fname of UPLOAD_FILES){
+    try{
+      addLog(`Subiendo ${fname}…`,'info');
+      await ghPutFile(`data/contratos/${fname}`,fileBuffers[fname],commitMsg);
+      addLog(`✓ ${fname}`,'ok');
+    }catch(e){
+      addLog(`✗ ${fname}: ${e.message}`,'err');
+      errCount++;
+    }
+  }
+
+  try{
+    const meta={ultima_actualizacion:dateStr,semana:weekStr,archivos:UPLOAD_FILES};
+    const metaBytes=new TextEncoder().encode(JSON.stringify(meta,null,2));
+    await ghPutFile('data/contratos/meta.json',metaBytes,commitMsg);
+    addLog(`✓ meta.json — ${weekStr}`,'ok');
+  }catch(e){
+    addLog(`✗ meta.json: ${e.message}`,'err');
+    errCount++;
+  }
+
+  CONTRATOS_FILES.forEach(f=>{ try{sessionStorage.removeItem(CACHE_VERSION+'_'+BASE_CONT+f);}catch(e){} });
+
+  try{
+    CONTRACTS=[...ALL_CONTRATOS_BASE];
+    const existingNums=new Set(CONTRACTS.map(c=>String(c['Nro contrato'])));
+    const wbsList=UPLOAD_FILES.map(fname=>({nombre:fname,wb:XLSX.read(fileBuffers[fname],{type:'array',raw:true})}));
+    const{contratos,suministros}=parseContratosWorkbooks(wbsList);
+    contratos.forEach(c=>{
+      const nro=String(c['Nro contrato']);
+      if(!existingNums.has(nro)){CONTRACTS.push(c);existingNums.add(nro);}
+      else{
+        const idx=CONTRACTS.findIndex(x=>String(x['Nro contrato'])===nro);
+        if(idx>=0){
+          if(c.tope_anual_mwh)  CONTRACTS[idx].tope_anual_mwh=c.tope_anual_mwh;
+          if(c.precio_usd)      CONTRACTS[idx].precio_usd=c.precio_usd;
+          if(c.precio_display)  CONTRACTS[idx].precio_display=c.precio_display;
+          if(c['TIPO RECURSO']) CONTRACTS[idx]['TIPO RECURSO']=c['TIPO RECURSO'];
+        }
+      }
+    });
+    Object.assign(SUMINISTROS_BY_CONTRACT,suministros);
+    addLog(`✓ Sesión actualizada — ${CONTRACTS.length} contratos`,'ok');
+    setS('K','ok',`${CONTRACTS.length} contratos · ${weekStr}`);
+    refresh();
+  }catch(e){
+    addLog(`✗ Error actualizando sesión: ${e.message}`,'err');
+    errCount++;
+  }
+
+  document.getElementById('uploadLastMeta').textContent=`Última actualización: ${weekStr} — ${dateStr}`;
+
+  if(errCount>0){
+    setUploadState('error',`Completado con ${errCount} error(es) — revisá el log`);
+  } else {
+    setUploadState('done','✓ Archivos subidos y datos actualizados');
+    addLog('✓ Todo OK — repo actualizado','ok');
+  }
+  document.getElementById('uploadInput').value='';
+}
+
+async function ghGetSHA(path){
+  const r=await fetch(`${GH_API}/${path}`,{headers:{Authorization:`token ${GH_TOKEN}`,Accept:'application/vnd.github.v3+json'}});
+  if(r.status===404) return null;
+  if(!r.ok) throw new Error(`SHA ${path}: HTTP ${r.status}`);
+  return (await r.json()).sha||null;
+}
+
+async function ghPutFile(path,uint8arr,message){
+  let bin='';
+  for(let i=0;i<uint8arr.length;i++) bin+=String.fromCharCode(uint8arr[i]);
+  const content=btoa(bin);
+  const sha=await ghGetSHA(path);
+  const body={message,content,branch:'main'};
+  if(sha) body.sha=sha;
+  const r=await fetch(`${GH_API}/${path}`,{method:'PUT',headers:{Authorization:`token ${GH_TOKEN}`,Accept:'application/vnd.github.v3+json','Content-Type':'application/json'},body:JSON.stringify(body)});
+  if(!r.ok){const err=await r.json().catch(()=>({}));throw new Error(err.message||`HTTP ${r.status}`);}
+  return await r.json();
+}
+
+async function loadUploadMeta(){
+  try{
+    const r=await fetch(`${BASE_CONT}meta.json?t=${Date.now()}`);
+    if(r.ok){
+      const m=await r.json();
+      document.getElementById('uploadLastMeta').textContent=`Última actualización: ${m.semana||'—'} — ${m.ultima_actualizacion||'—'}`;
+    } else {
+      document.getElementById('uploadLastMeta').textContent='Sin actualizaciones registradas';
+    }
+  }catch(e){
+    document.getElementById('uploadLastMeta').textContent='Sin actualizaciones registradas';
+  }
+}
+
+loadUploadMeta();
+
+</script>
+</body>
+</html>
