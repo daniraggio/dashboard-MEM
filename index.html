@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Dashboard MEM — Consumo & Contratos v10</title>
+<title>Dashboard MEM — Consumo & Contratos v11</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Bricolage+Grotesque:wght@400;600;800&display=swap" rel="stylesheet">
@@ -11,7 +11,7 @@
 <!--
 ================================================================================
 DASHBOARD MEM UNIFICADO — DOCUMENTACIÓN INTERNA (solo para Claude)
-Versión: 10
+Versión: 11
 Repositorio: daniraggio/dashboard-MEM
 URL: https://daniraggio.github.io/dashboard-MEM/
 ================================================================================
@@ -30,44 +30,55 @@ Unificación autónoma de consumos y contratos. Todos los datos viven en este mi
   - ALL[]:           GUs de consumo. Campos: id, name, type, dist, monthly[12], annual
   - CONTRACTS[]:     Contratos. Campos clave: 'Nro contrato', 'Vendedor', 'Suministro / grupo dem.',
                      'Conj. Generador', 'TIPO RECURSO', 'Tipo contrato', inicio_str, fin_str,
-                     tope_anual_mwh, precio_usd, precio_display.
+                     tope_anual_mwh, precio_usd, precio_display, tope_proporcional.
                      Fuentes: (1) ALL_CONTRATOS_BASE embebido, (2) XLSX /data/contratos/, (3) contratos_nuevos.json
   - CUIT_NAMES{}:    CUIT → Nombre del vendedor.
   - SUMINISTROS_BY_CONTRACT{}: Nro contrato → [NEMOs]. Desde SUMINISTROS.xlsx.
 
+## PARSEO DE XLSX DE CONTRATOS
+  Cada workbook se clasifica por sus headers:
+  - CONTRATOS.xlsx:            tiene nro_contrato + suministro + (vendedor|tipo_contrato|conj_generador)
+  - TOPES.xlsx:                tiene 'Tope anual [MWh]' o 'Tope mensual [MWh]'. Si anual vacío → mensual × 12.
+  - SUMINISTROS.xlsx:          tiene suministro pero NO es tabla de contratos → SUMINISTROS_BY_CONTRACT
+  - PARAMETROS_VARIABLES.xlsx: tiene 'Parámetro' + 'Valor'. Extrae:
+      · precio_display: siempre que el parámetro contenga "precio" (ej: "DTE - 6.5% <=67 U$S/MWh")
+      · precio_usd: solo si el valor empieza con número parseable
+  - CARACTERISTICAS.xlsx:      tiene 'Característica' + 'Valor'. Extrae:
+      · tope_anual_mwh: suma valores mensuales de "Tope mensual MWh" (ej: "ENE:330; FEB:330; ...")
+        Solo aplica si TOPES.xlsx no tiene ya un valor para ese contrato.
+
 ## LÓGICA DE INTEGRACIÓN GU ↔ CONTRATO
   1. Contratos directos: extractNemoFromSuministro(c['Suministro / grupo dem.']) === GU.id
      El campo puede venir como "(NEMO) Descripción" o directamente "NEMO".
-     extractNemoFromSuministro() extrae el NEMO del paréntesis si lo hay.
   2. Contratos grupales: GU.id aparece en SUMINISTROS_BY_CONTRACT[nroContrato]
-  El badge en la tabla muestra cantidad + volumen vigente. Click → panel lateral.
+  Badge en tabla: cantidad + volumen vigente. Click → panel lateral.
 
 ## VIGENCIA DE CONTRATOS
-  Un contrato es vigente si: inicio_str <= hoy <= fin_str (comparación de fecha ISO YYYY-MM-DD).
-  volumenVigente(nemo) suma tope_anual_mwh de los contratos vigentes del GU.
+  Un contrato es vigente si: inicio_str <= hoy <= fin_str.
+  volumenVigente(nemo) suma tope_anual_mwh de contratos vigentes (excluye tope_proporcional).
 
 ## PERFORMANCE
-  - Cache sessionStorage: XLSX y JSON se guardan comprimidos (base64) en sessionStorage.
-    Clave: "mem_cache_v1_{url_hash}". En recarga de página, se usan los datos cacheados.
-  - Renderizado virtual en tabla: solo se renderizan las filas visibles + buffer.
-    ROW_H = altura de fila en px. VIS_ROWS = filas visibles. BUFFER = filas extra arriba/abajo.
+  - Cache sessionStorage: XLSX cacheados en base64. Clave: CACHE_VERSION + '_' + url.
+    Cambiar CACHE_VERSION invalida todo el cache.
+  - Renderizado virtual en tabla: solo filas visibles + BUFFER. ROW_H=41px.
 
 ## REGLAS PARA CLAUDE AL EDITAR
   1. VERSIÓN: incrementar en: este comentario (Versión:), <title>, versionBadge innerHTML.
-  2. No hay lógica de escritura a GitHub (este dashboard es solo lectura).
-  3. Los XLSX se cachean en sessionStorage; cambiar CACHE_VERSION invalida el cache.
+  2. Actualizar siempre ## HISTORIAL con los cambios de la versión nueva.
+  3. No hay lógica de escritura a GitHub salvo la sección de actualización de contratos.
+  4. GH_TOKEN está hardcodeado — no remover ni loguear.
 
 ## HISTORIAL
 v1: Dashboard unificado inicial (carga básica desde contratos_nuevos.json)
 v4: Dashboard autónomo — todos los datos en daniraggio/dashboard-MEM;
     /data/consumos/ y /data/contratos/; eliminados inputs de repo; hardcodeado
 v5: Meses ocultos por defecto; filtro "Sin contratos"; fix matching NEMO con paréntesis
-v6: (numeración corregida en conversación)
-v7: Volumen vigente en badge de contratos; cache sessionStorage para XLSX;
-    renderizado virtual en tabla; tabla arranca con ancho completo
-v8: Sección de actualización de contratos — carga de 5 XLSX con drag&drop,
-    subida a GitHub via API con token hardcodeado, guarda semana de carga en
-    meta.json en el repo, invalida cache sessionStorage al actualizar
+v7: Volumen vigente en badge; cache sessionStorage; renderizado virtual; tabla ancho completo
+v8: Sección actualización contratos — slot único drag&drop, subida automática a GitHub,
+    meta.json con semana de carga, invalida cache al actualizar
+v9: Parser PARAMETROS_VARIABLES (precio) y CARACTERISTICAS (tope mensual → anual sumado)
+v10: Fix tope: si anual vacío en TOPES usar mensual × 12
+v11: precio_display siempre se guarda aunque el valor sea variable (ej: "DTE - 6.5% <=67 U$S/MWh")
 ================================================================================
 -->
 
@@ -331,7 +342,7 @@ tr.vt-pad td { padding:0; border:none; background:transparent; }
   <div>
     <div class="eyebrow">
       Sistema de Análisis Energético — MEM
-      <span class="version-badge">v10 UNIFICADO</span>
+      <span class="version-badge">v11 UNIFICADO</span>
     </div>
     <h1>Grandes Usuarios<br><span>&amp; Contratos</span></h1>
   </div>
@@ -876,12 +887,11 @@ function parseContratosWorkbooks(wbsList){
     if(!parametrosMap[nro]) parametrosMap[nro]={};
     // Precio: detectar cualquier parámetro que contenga "precio"
     if(param.includes('precio')){
-      // Intentar extraer número del valor (ej: "63 U$S/MWh" → 63)
+      // Siempre guardar el display original
+      parametrosMap[nro].precio_display=valor;
+      // Intentar extraer número (ej: "63 U$S/MWh" → 63); si no hay, queda null
       const num=parseFloat(String(valor).replace(',','.'));
-      if(!isNaN(num)){
-        parametrosMap[nro].precio_usd=num;
-        parametrosMap[nro].precio_display=valor;
-      }
+      if(!isNaN(num)) parametrosMap[nro].precio_usd=num;
     }
   });
 
