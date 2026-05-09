@@ -827,9 +827,18 @@ function dateToStr(d){
 // ════════════════════════════════════════════════════════════════════════════════
 // LOOKUP GU ↔ CONTRATOS
 // ════════════════════════════════════════════════════════════════════════════════
+
+// Extrae el NEMO de un campo suministro: "(DANOLOCY) DANONE S.A." → "DANOLOCY"
+// Si no hay paréntesis, devuelve el valor completo en uppercase.
+function extractNemoFromSuministro(su){
+  if(!su) return '';
+  const match = String(su).match(/^\s*\(([^)]+)\)/);
+  return (match ? match[1] : String(su)).trim().toUpperCase();
+}
+
 function getContractsByNemo(nemo){
   const nUp=nemo.toUpperCase();
-  const direct=CONTRACTS.filter(c=>(c['Suministro / grupo dem.']||'').trim().toUpperCase()===nUp);
+  const direct=CONTRACTS.filter(c=>extractNemoFromSuministro(c['Suministro / grupo dem.'])===nUp);
   const grupales=CONTRACTS.filter(c=>{
     const tc=(c['Tipo contrato']||'').toLowerCase();
     if(!tc.includes('grupal')) return false;
