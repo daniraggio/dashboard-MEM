@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Dashboard MEM — Consumo & Contratos v9</title>
+<title>Dashboard MEM — Consumo & Contratos v10</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Bricolage+Grotesque:wght@400;600;800&display=swap" rel="stylesheet">
@@ -11,7 +11,7 @@
 <!--
 ================================================================================
 DASHBOARD MEM UNIFICADO — DOCUMENTACIÓN INTERNA (solo para Claude)
-Versión: 9
+Versión: 10
 Repositorio: daniraggio/dashboard-MEM
 URL: https://daniraggio.github.io/dashboard-MEM/
 ================================================================================
@@ -331,7 +331,7 @@ tr.vt-pad td { padding:0; border:none; background:transparent; }
   <div>
     <div class="eyebrow">
       Sistema de Análisis Energético — MEM
-      <span class="version-badge">v9 UNIFICADO</span>
+      <span class="version-badge">v10 UNIFICADO</span>
     </div>
     <h1>Grandes Usuarios<br><span>&amp; Contratos</span></h1>
   </div>
@@ -821,17 +821,24 @@ function parseContratosWorkbooks(wbsList){
     else if(hasSuministro&&!esContratos) suministroRows=json;
   });
 
-  // Construir topeMap
+  // Construir topeMap desde TOPES.xlsx
   const topeMap={};
   topeRows.forEach(r=>{
     const keys=Object.keys(r);
     const findKey=(...cands)=>{for(const c of cands){const f=keys.find(k=>norm(k)===norm(c));if(f)return f;}return null;};
-    const nroKey =findKey('Contrato','Nro contrato','nro_contrato');
-    const tKey   =findKey('Tope anual [MWh]','tope_anual_mwh','Tope Anual MWh');
-    if(!nroKey||!tKey) return;
+    const nroKey  =findKey('Contrato','Nro contrato','nro_contrato');
+    const tAnKey  =findKey('Tope anual [MWh]','tope_anual_mwh','Tope Anual MWh','Tope anual MWh');
+    const tMenKey =findKey('Tope mensual [MWh]','tope_mensual_mwh','Tope Mensual MWh','Tope mensual MWh');
+    if(!nroKey) return;
     const nro=String(r[nroKey]||'').trim();
-    const t=parseFloat(r[tKey]);
-    if(nro&&!isNaN(t)&&t>0){if(!topeMap[nro]||t>topeMap[nro])topeMap[nro]=t;}
+    if(!nro) return;
+    // Preferir tope anual; si está vacío, usar mensual × 12
+    let t=tAnKey?parseFloat(r[tAnKey]):NaN;
+    if((isNaN(t)||t<=0)&&tMenKey){
+      const tm=parseFloat(r[tMenKey]);
+      if(!isNaN(tm)&&tm>0) t=tm*12;
+    }
+    if(!isNaN(t)&&t>0){ if(!topeMap[nro]||t>topeMap[nro]) topeMap[nro]=t; }
   });
 
   // Construir SUMINISTROS_BY_CONTRACT
