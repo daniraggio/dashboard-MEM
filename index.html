@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Dashboard MEM — Consumo & Contratos v13</title>
+<title>Dashboard MEM — Consumo & Contratos v16</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Bricolage+Grotesque:wght@400;600;800&display=swap" rel="stylesheet">
@@ -11,7 +11,7 @@
 <!--
 ================================================================================
 DASHBOARD MEM UNIFICADO — DOCUMENTACIÓN INTERNA (solo para Claude)
-Versión: 13
+Versión: 16
 Repositorio: daniraggio/dashboard-MEM
 URL: https://daniraggio.github.io/dashboard-MEM/
 ================================================================================
@@ -66,7 +66,8 @@ Unificación autónoma de consumos y contratos. Todos los datos viven en este mi
   1. VERSIÓN: incrementar en: este comentario (Versión:), <title>, versionBadge innerHTML.
   2. Actualizar siempre ## HISTORIAL con los cambios de la versión nueva.
   3. No hay lógica de escritura a GitHub salvo la sección de actualización de contratos.
-  4. GH_TOKEN está hardcodeado — no remover ni loguear.
+  4. GH_TOKEN ya no está hardcodeado — se guarda en localStorage con key 'mem_gh_token'.
+     getGHToken() lo lee, setGHToken(t) lo escribe. El modal de token (🔑) permite configurarlo.
 
 ## HISTORIAL
 v1: Dashboard unificado inicial (carga básica desde contratos_nuevos.json)
@@ -79,20 +80,30 @@ v8: Sección actualización contratos — slot único drag&drop, subida automát
 v9: Parser PARAMETROS_VARIABLES (precio) y CARACTERISTICAS (tope mensual → anual sumado)
 v10: Fix tope: si anual vacío en TOPES usar mensual × 12
 v11: precio_display siempre se guarda aunque el valor sea variable (ej: "DTE - 6.5% <=67 U$S/MWh")
+v12: Panel lateral filtra por vigencia al calcular vol. total y precio promedio (igual que badge)
+v13-15: Renovación de token GitHub (GitHub revoca tokens detectados en push público a repo
+    público). v15: token movido a localStorage ('mem_gh_token'), modal 🔑 para configurarlo,
+    ya NO está hardcodeado en el HTML.
+v16: Tema oscuro — paleta inspirada en dashboard "Estado Alto Valle" (navy oscuro,
+    acentos naranja #fb923c / teal #2dd4bf / azul #5b8def / púrpura #a78bfa / verde #34d399).
+    Todas las variables :root + colores de gráficos (TC, TBG, GRID, scales, líneas Total)
+    actualizados. Botones con fondo de color brillante usan texto var(--bg) (oscuro) en
+    vez de #fff para contraste.
 ================================================================================
 -->
 
 <style>
 /* ── TOKENS ─────────────────────────────────────────────────────────────────── */
 :root {
-  --bg:#f4f1eb; --bg2:#ede9e0; --surface:#ffffff;
-  --border:#d6cfc0; --ink:#1a1612; --ink2:#6b6458; --ink3:#a09890;
-  --guma:#c4382a; --gume:#1e6b45; --gudi:#1a3a6e; --accent:#c4382a;
-  --blue:#2155a3; --blue-bg:#edf2fc; --blue-text:#1a4282;
-  --amber:#b06a10; --amber-bg:#fdf3e3;
-  --green:#276940; --green-bg:#e8f5ee; --green-text:#1d5131;
-  --red:#b52a2a; --red-bg:#fdeaea;
-  --gray-bg:#eceae3;
+  --bg:#0a0e17; --bg2:#121a2b; --surface:#161f33;
+  --border:#28324a; --ink:#eaeef6; --ink2:#9aa7c4; --ink3:#6b7691;
+  --guma:#fb923c; --gume:#2dd4bf; --gudi:#5b8def; --accent:#fb923c;
+  --blue:#4d8fff; --blue-bg:#16233f; --blue-text:#8ec0ff;
+  --amber:#fbbf24; --amber-bg:#2c2410;
+  --green:#34d399; --green-bg:#0f2a23; --green-text:#6ee7c9;
+  --red:#f87171; --red-bg:#2d1820;
+  --gray-bg:#232c42;
+  --purple:#a78bfa; --purple-bg:#241f3f; --purple-text:#c4b5fd;
   --panel-w: 580px;
 }
 *,*::before,*::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -105,7 +116,7 @@ body {
 }
 body::after {
   content: ''; position: fixed; inset: 0;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='4' height='4'%3E%3Ccircle cx='1' cy='1' r='0.4' fill='%23a09890' opacity='0.15'/%3E%3C/svg%3E");
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='4' height='4'%3E%3Ccircle cx='1' cy='1' r='0.4' fill='%23ffffff' opacity='0.025'/%3E%3C/svg%3E");
   pointer-events: none; z-index: 0;
 }
 body.panel-open { margin-right: var(--panel-w); }
@@ -136,7 +147,7 @@ h1 span { color:var(--accent); }
 .btn.outline { background:transparent; color:var(--ink2); border:1.5px solid var(--border); }
 .btn.outline:hover { border-color:var(--ink); color:var(--ink); background:var(--bg2); }
 .btn.outline.on { background:var(--ink); color:var(--bg); border-color:var(--ink); }
-.btn.export { background:var(--gume); color:#fff; }
+.btn.export { background:var(--gume); color:var(--bg); }
 
 .status-dot { width:8px; height:8px; border-radius:50%; background:var(--ink3); flex-shrink:0; }
 .status-dot.ok  { background:var(--gume); }
@@ -158,14 +169,14 @@ h1 span { color:var(--accent); }
 .filter-btn { padding:6px 14px; border:1.5px solid var(--border); border-radius:4px; background:transparent; font-family:'DM Mono',monospace; font-size:12px; font-weight:500; color:var(--ink2); cursor:pointer; transition:all 0.15s; letter-spacing:1px; }
 .filter-btn:hover { border-color:var(--ink); color:var(--ink); background:var(--bg2); }
 .filter-btn.active[data-type="all"]  { background:var(--ink);  color:var(--bg); border-color:var(--ink);  }
-.filter-btn.active[data-type="GUMA"] { background:var(--guma); color:#fff;      border-color:var(--guma); }
-.filter-btn.active[data-type="GUME"] { background:var(--gume); color:#fff;      border-color:var(--gume); }
-.filter-btn.active[data-type="GUDI"] { background:var(--gudi); color:#fff;      border-color:var(--gudi); }
-.filter-btn.active:not([data-type])  { background:var(--blue); color:#fff;      border-color:var(--blue); }
+.filter-btn.active[data-type="GUMA"] { background:var(--guma); color:var(--bg); border-color:var(--guma); }
+.filter-btn.active[data-type="GUME"] { background:var(--gume); color:var(--bg); border-color:var(--gume); }
+.filter-btn.active[data-type="GUDI"] { background:var(--gudi); color:var(--bg); border-color:var(--gudi); }
+.filter-btn.active:not([data-type])  { background:var(--blue); color:var(--bg); border-color:var(--blue); }
 .dist-select { padding:6px 10px; border:1.5px solid var(--border); border-radius:4px; background:var(--surface); font-family:'DM Mono',monospace; font-size:11px; color:var(--ink2); cursor:pointer; outline:none; max-width:220px; transition:border-color 0.15s; }
 .dist-select:focus { border-color:var(--ink); }
-.dist-select.active { border-color:var(--accent); color:var(--accent); background:rgba(196,56,42,0.05); }
-.month-tag { display:none; align-items:center; gap:6px; padding:5px 10px; background:rgba(196,56,42,0.08); border:1px solid rgba(196,56,42,0.25); border-radius:4px; font-family:'DM Mono',monospace; font-size:11px; color:var(--accent); }
+.dist-select.active { border-color:var(--accent); color:var(--accent); background:rgba(251,146,60,0.08); }
+.month-tag { display:none; align-items:center; gap:6px; padding:5px 10px; background:rgba(251,146,60,0.1); border:1px solid rgba(251,146,60,0.3); border-radius:4px; font-family:'DM Mono',monospace; font-size:11px; color:var(--accent); }
 .month-tag.on { display:flex; }
 .clear-tag { background:none; border:none; cursor:pointer; color:var(--accent); font-size:13px; padding:0; }
 
@@ -179,14 +190,14 @@ h1 span { color:var(--accent); }
 .stat-card.s-total::before    { background:var(--accent); }
 .stat-card.s-avg::before      { background:var(--gume); }
 .stat-card.s-max::before      { background:var(--gudi); }
-.stat-card.s-count::before    { background:#b5821f; }
+.stat-card.s-count::before    { background:var(--amber); }
 .stat-card.s-contracts::before{ background:var(--blue); }
 .stat-lbl { font-family:'DM Mono',monospace; font-size:10px; letter-spacing:2px; text-transform:uppercase; color:var(--ink3); margin-bottom:8px; }
 .stat-num { font-size:26px; font-weight:800; line-height:1; margin-bottom:4px; }
 .stat-card.s-total .stat-num    { color:var(--accent); }
 .stat-card.s-avg .stat-num      { color:var(--gume); }
 .stat-card.s-max .stat-num      { color:var(--gudi); }
-.stat-card.s-count .stat-num    { color:#b5821f; }
+.stat-card.s-count .stat-num    { color:var(--amber); }
 .stat-card.s-contracts .stat-num{ color:var(--blue); }
 .stat-sub { font-family:'DM Mono',monospace; font-size:11px; color:var(--ink3); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 
@@ -240,15 +251,15 @@ tbody td.td-type { text-align:left; }
 tbody td.td-dist { text-align:left; font-size:11px; color:var(--ink2); max-width:160px; overflow:hidden; text-overflow:ellipsis; }
 tbody td.td-contracts { text-align:left; width:140px; }
 td.ann { font-weight:500; color:var(--ink) !important; }
-td.mhi { background:rgba(196,56,42,0.07) !important; color:var(--accent) !important; font-weight:500; }
+td.mhi { background:rgba(251,146,60,0.12) !important; color:var(--accent) !important; font-weight:500; }
 .type-badge { display:inline-block; padding:1px 7px; border-radius:3px; font-size:10px; font-family:'DM Mono',monospace; letter-spacing:1px; }
-.badge-GUMA { background:rgba(196,56,42,0.1); color:var(--guma); }
-.badge-GUME { background:rgba(30,107,69,0.1);  color:var(--gume); }
-.badge-GUDI { background:rgba(26,58,110,0.1);  color:var(--gudi); }
-.contract-badge { display:inline-flex; align-items:center; gap:4px; padding:2px 8px; border-radius:12px; font-size:10px; font-family:'DM Mono',monospace; font-weight:600; background:var(--blue-bg); color:var(--blue-text); border:1px solid rgba(33,85,163,0.2); cursor:pointer; transition:all 0.15s; white-space:nowrap; }
-.contract-badge:hover { background:var(--blue); color:#fff; }
-.contract-badge.grouped { background:#f0e6ff; color:#5c2d9c; border-color:rgba(92,45,156,0.2); }
-.contract-badge.grouped:hover { background:#5c2d9c; color:#fff; }
+.badge-GUMA { background:rgba(251,146,60,0.15); color:var(--guma); }
+.badge-GUME { background:rgba(45,212,191,0.15);  color:var(--gume); }
+.badge-GUDI { background:rgba(91,141,239,0.15);  color:var(--gudi); }
+.contract-badge { display:inline-flex; align-items:center; gap:4px; padding:2px 8px; border-radius:12px; font-size:10px; font-family:'DM Mono',monospace; font-weight:600; background:var(--blue-bg); color:var(--blue-text); border:1px solid rgba(77,143,255,0.3); cursor:pointer; transition:all 0.15s; white-space:nowrap; }
+.contract-badge:hover { background:var(--blue); color:var(--bg); }
+.contract-badge.grouped { background:var(--purple-bg); color:var(--purple-text); border-color:rgba(167,139,250,0.25); }
+.contract-badge.grouped:hover { background:var(--purple); color:var(--bg); }
 .badge-vol { font-size:9px; opacity:0.72; margin-left:1px; }
 .no-contract { font-family:'DM Mono',monospace; font-size:10px; color:var(--ink3); }
 .col-resizer { position:absolute; right:0; top:0; bottom:0; width:5px; cursor:col-resize; user-select:none; z-index:3; }
@@ -264,6 +275,20 @@ tr.vt-pad td { padding:0; border:none; background:transparent; }
 .tbl-search input:focus { border-color:var(--ink); }
 .tbl-search input::placeholder { color:var(--ink3); }
 .tbl-search-icon { position:absolute; left:9px; top:50%; transform:translateY(-50%); color:var(--ink3); font-size:13px; pointer-events:none; }
+
+/* ── TOKEN MODAL ─────────────────────────────────────────────────────────────── */
+.token-status { font-family:'DM Mono',monospace; font-size:10px; padding:3px 8px; border-radius:4px; }
+.token-status.ok  { background:var(--green-bg); color:var(--green-text); }
+.token-status.err { background:var(--red-bg); color:var(--accent); }
+.modal-overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:200; align-items:center; justify-content:center; }
+.modal-overlay.show { display:flex; }
+.modal-box { background:var(--surface); border-radius:12px; padding:28px; width:420px; max-width:90vw; box-shadow:0 8px 40px rgba(0,0,0,0.5); display:flex; flex-direction:column; gap:16px; }
+.modal-title { font-size:16px; font-weight:700; color:var(--ink); }
+.modal-desc { font-size:12px; color:var(--ink2); line-height:1.6; }
+.modal-desc code { background:var(--bg2); padding:1px 5px; border-radius:3px; font-family:'DM Mono',monospace; }
+.modal-input { width:100%; padding:10px 12px; border:1.5px solid var(--border); border-radius:6px; font-family:'DM Mono',monospace; font-size:13px; color:var(--ink); background:var(--bg2); outline:none; box-sizing:border-box; }
+.modal-input:focus { border-color:var(--blue); }
+.modal-actions { display:flex; gap:8px; justify-content:flex-end; }
 
 /* ── UPLOAD SECTION ──────────────────────────────────────────────────────────── */
 .upload-section { margin-top: 32px; }
@@ -316,8 +341,8 @@ tr.vt-pad td { padding:0; border:none; background:transparent; }
 .ctag-r  { background:var(--green-bg); color:var(--green-text); }
 .ctag-nr { background:var(--amber-bg); color:var(--amber); }
 .ctag-na { background:var(--gray-bg);  color:var(--ink3); }
-.ctag-g  { background:#f0e6ff; color:#5c2d9c; }
-.ctag-inc{ background:#fffbe6; color:#7a5c00; }
+.ctag-g  { background:var(--purple-bg); color:var(--purple-text); }
+.ctag-inc{ background:var(--amber-bg); color:var(--amber); }
 .contract-grid { display:grid; grid-template-columns:1fr 1fr; gap:6px 14px; }
 .cg-item { display:flex; flex-direction:column; gap:1px; }
 .cg-lbl { font-family:'DM Mono',monospace; font-size:9px; letter-spacing:1px; text-transform:uppercase; color:var(--ink3); }
@@ -330,7 +355,7 @@ tr.vt-pad td { padding:0; border:none; background:transparent; }
 .nemo-tag.highlight { background:var(--green-bg); color:var(--green-text); font-weight:700; }
 .panel-empty   { text-align:center; padding:32px 16px; font-family:'DM Mono',monospace; font-size:13px; color:var(--ink3); }
 .panel-loading { text-align:center; padding:32px 16px; font-family:'DM Mono',monospace; font-size:12px; color:var(--ink3); }
-.panel-overlay { display:none; position:fixed; inset:0; background:rgba(26,22,18,.35); z-index:999; backdrop-filter:blur(2px); }
+.panel-overlay { display:none; position:fixed; inset:0; background:rgba(5,8,14,.55); z-index:999; backdrop-filter:blur(2px); }
 .panel-overlay.show { display:block; }
 </style>
 </head>
@@ -342,7 +367,7 @@ tr.vt-pad td { padding:0; border:none; background:transparent; }
   <div>
     <div class="eyebrow">
       Sistema de Análisis Energético — MEM
-      <span class="version-badge">v13 UNIFICADO</span>
+      <span class="version-badge">v16 UNIFICADO</span>
     </div>
     <h1>Grandes Usuarios<br><span>&amp; Contratos</span></h1>
   </div>
@@ -534,6 +559,10 @@ tr.vt-pad td { padding:0; border:none; background:transparent; }
       <div class="card-title">Actualización de contratos</div>
       <div class="card-meta" id="uploadLastMeta">Cargando info de última actualización…</div>
     </div>
+    <div style="display:flex;gap:8px;align-items:center">
+      <span class="token-status" id="tokenStatus">Sin token</span>
+      <button class="btn outline" onclick="openTokenModal()">🔑 Token</button>
+    </div>
   </div>
 
   <div class="upload-single" id="uploadSingle"
@@ -606,15 +635,16 @@ let CONTRACTS = [];   // Contratos (fusión de base + XLSX + JSON)
 let SUMINISTROS_BY_CONTRACT = {};  // nroContrato → [NEMOs]
 
 const MO   = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
-const TC   = { GUMA:'#c4382a', GUME:'#1e6b45', GUDI:'#1a3a6e' };
-const TBG  = { GUMA:'rgba(196,56,42,0.7)', GUME:'rgba(30,107,69,0.7)', GUDI:'rgba(26,58,110,0.7)' };
-const GRID = '#ede9e0';
+const TC   = { GUMA:'#fb923c', GUME:'#2dd4bf', GUDI:'#5b8def' };
+const TBG  = { GUMA:'rgba(251,146,60,0.7)', GUME:'rgba(45,212,191,0.7)', GUDI:'rgba(91,141,239,0.7)' };
+const GRID = '#222c44';
 const REPO       = 'daniraggio/dashboard-MEM';
 const BASE_RAW   = `https://raw.githubusercontent.com/${REPO}/main`;
 const BASE_CONS  = `${BASE_RAW}/data/consumos/`;
 const BASE_CONT  = `${BASE_RAW}/data/contratos/`;
-const GH_TOKEN   = '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';
 const GH_API     = `https://api.github.com/repos/${REPO}/contents`;
+function getGHToken(){ return localStorage.getItem('mem_gh_token')||''; }
+function setGHToken(t){ localStorage.setItem('mem_gh_token',t.trim()); }
 
 const DATA_FILES = [
   { file:'GUDI.xlsx',  type:'GUDI' },
@@ -654,17 +684,17 @@ function gname(id){ return NAMES[id]||id; }
 // ════════════════════════════════════════════════════════════════════════════════
 let cClient, cMonthly, cType, cRanking, cCompare;
 Chart.defaults.font.family = "'DM Mono', monospace";
-Chart.defaults.color = '#a09890';
-const scaleY = { grid:{color:GRID}, ticks:{color:'#a09890', callback:v=>fmtS(v)}, beginAtZero:true };
-const scaleX = { grid:{color:GRID}, ticks:{color:'#a09890'} };
-const scaleXnoGrid = { grid:{display:false}, ticks:{color:'#a09890'} };
+Chart.defaults.color = '#6b7691';
+const scaleY = { grid:{color:GRID}, ticks:{color:'#6b7691', callback:v=>fmtS(v)}, beginAtZero:true };
+const scaleX = { grid:{color:GRID}, ticks:{color:'#6b7691'} };
+const scaleXnoGrid = { grid:{display:false}, ticks:{color:'#6b7691'} };
 
 function initCharts(){
   cClient = new Chart(document.getElementById('cClient'),{type:'line',data:{labels:MO,datasets:[]},options:{responsive:true,maintainAspectRatio:false,onClick(_,els){if(els.length)toggleMonth(els[0].index);},plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>' '+fmtS(c.raw)}}},scales:{x:scaleX,y:scaleY}}});
   cMonthly= new Chart(document.getElementById('cMonthly'),{type:'bar',data:{labels:MO,datasets:[]},options:{responsive:true,maintainAspectRatio:false,onClick(_,els){if(els.length)toggleMonth(els[0].index);},plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>' '+fmtS(c.raw)}}},scales:{x:scaleXnoGrid,y:scaleY}}});
-  cType   = new Chart(document.getElementById('cType'),{type:'doughnut',data:{labels:[],datasets:[]},options:{responsive:true,maintainAspectRatio:false,cutout:'62%',onClick(_,els){if(!els.length)return;const t=['GUMA','GUME','GUDI'][els[0].index];setType(t===aType?'all':t);},plugins:{legend:{position:'bottom',labels:{color:'#6b6458',padding:14,boxWidth:10,font:{size:11}}},tooltip:{callbacks:{label:c=>' '+c.label+': '+fmtS(c.raw)}}}}});
-  cRanking= new Chart(document.getElementById('cRanking'),{type:'bar',data:{labels:[],datasets:[]},options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,onClick(_,els){if(!els.length)return;const d=(cRanking._rows||[])[els[0].index];if(!d)return;aTerm=d.name;document.getElementById('searchInput').value=d.name;syncFilterUI();refresh();},plugins:{legend:{display:false},tooltip:{callbacks:{title:i=>i[0].label,label:c=>' '+fmtS(c.raw)}}},scales:{x:{grid:{color:GRID},ticks:{color:'#a09890',callback:v=>fmtS(v)},beginAtZero:true},y:{grid:{display:false},ticks:{color:'#6b6458',font:{size:10}}}}}});
-  cCompare= new Chart(document.getElementById('cCompare'),{type:'line',data:{labels:MO,datasets:[]},options:{responsive:true,maintainAspectRatio:false,onClick(_,els){if(els.length)toggleMonth(els[0].index);},plugins:{legend:{position:'bottom',labels:{color:'#6b6458',padding:14,boxWidth:10,font:{size:11}}},tooltip:{callbacks:{label:c=>' '+c.dataset.label+': '+fmtS(c.raw)}}},scales:{x:scaleX,y:scaleY}}});
+  cType   = new Chart(document.getElementById('cType'),{type:'doughnut',data:{labels:[],datasets:[]},options:{responsive:true,maintainAspectRatio:false,cutout:'62%',onClick(_,els){if(!els.length)return;const t=['GUMA','GUME','GUDI'][els[0].index];setType(t===aType?'all':t);},plugins:{legend:{position:'bottom',labels:{color:'#9aa7c4',padding:14,boxWidth:10,font:{size:11}}},tooltip:{callbacks:{label:c=>' '+c.label+': '+fmtS(c.raw)}}}}});
+  cRanking= new Chart(document.getElementById('cRanking'),{type:'bar',data:{labels:[],datasets:[]},options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,onClick(_,els){if(!els.length)return;const d=(cRanking._rows||[])[els[0].index];if(!d)return;aTerm=d.name;document.getElementById('searchInput').value=d.name;syncFilterUI();refresh();},plugins:{legend:{display:false},tooltip:{callbacks:{title:i=>i[0].label,label:c=>' '+fmtS(c.raw)}}},scales:{x:{grid:{color:GRID},ticks:{color:'#6b7691',callback:v=>fmtS(v)},beginAtZero:true},y:{grid:{display:false},ticks:{color:'#9aa7c4',font:{size:10}}}}}});
+  cCompare= new Chart(document.getElementById('cCompare'),{type:'line',data:{labels:MO,datasets:[]},options:{responsive:true,maintainAspectRatio:false,onClick(_,els){if(els.length)toggleMonth(els[0].index);},plugins:{legend:{position:'bottom',labels:{color:'#9aa7c4',padding:14,boxWidth:10,font:{size:11}}},tooltip:{callbacks:{label:c=>' '+c.dataset.label+': '+fmtS(c.raw)}}},scales:{x:scaleX,y:scaleY}}});
 }
 
 // ════════════════════════════════════════════════════════════════════════════════
@@ -1290,7 +1320,7 @@ function updClientChart(data){
   const ds=[];
   if(data.length){
     const totals=Array(12).fill(0).map((_,i)=>data.reduce((s,d)=>s+(d.monthly[i]||0),0));
-    ds.push({label:'Total',data:totals,borderColor:'#1a1612',backgroundColor:'rgba(26,22,18,0.06)',borderWidth:2.5,fill:true,tension:0.4,pointRadius:4,pointHoverRadius:7,pointBackgroundColor:totals.map((_,i)=>i===aMonth?'#c4382a':'#1a1612'),pointBorderColor:'transparent'});
+    ds.push({label:'Total',data:totals,borderColor:'#eaeef6',backgroundColor:'rgba(234,238,246,0.05)',borderWidth:2.5,fill:true,tension:0.4,pointRadius:4,pointHoverRadius:7,pointBackgroundColor:totals.map((_,i)=>i===aMonth?'#fb923c':'#eaeef6'),pointBorderColor:'transparent'});
   }
   cClient.data.datasets=ds; cClient.update();
   const n=data.length;
@@ -1299,8 +1329,8 @@ function updClientChart(data){
 function updMonthly(data){
   const tot=Array(12).fill(0);
   data.forEach(d=>d.monthly.forEach((v,i)=>{if(v!=null)tot[i]+=v;}));
-  const clrs=MO.map((_,i)=>{if(i===aMonth)return'#1a1612';const bt={GUMA:0,GUME:0,GUDI:0};data.forEach(d=>{if(d.monthly[i]!=null)bt[d.type]=(bt[d.type]||0)+d.monthly[i];});return TBG[Object.entries(bt).sort((a,b)=>b[1]-a[1])[0][0]]||'#a09890';});
-  cMonthly.data.datasets=[{data:tot,backgroundColor:clrs,borderColor:clrs.map((_,i)=>i===aMonth?'#1a1612':'transparent'),borderWidth:2,borderRadius:4}];
+  const clrs=MO.map((_,i)=>{if(i===aMonth)return'#fb923c';const bt={GUMA:0,GUME:0,GUDI:0};data.forEach(d=>{if(d.monthly[i]!=null)bt[d.type]=(bt[d.type]||0)+d.monthly[i];});return TBG[Object.entries(bt).sort((a,b)=>b[1]-a[1])[0][0]]||'#6b7691';});
+  cMonthly.data.datasets=[{data:tot,backgroundColor:clrs,borderColor:clrs.map((_,i)=>i===aMonth?'#eaeef6':'transparent'),borderWidth:2,borderRadius:4}];
   cMonthly.update();
   set('mlyMeta','total: '+fmtS(tot.reduce((a,b)=>a+b,0)));
 }
@@ -1553,6 +1583,12 @@ async function processUploadFiles(files){
   }
 
   setUploadState('uploading','Subiendo al repo…');
+  const ghToken = getGHToken();
+  if(!ghToken){
+    setUploadState('error','Configurá el token de GitHub antes de subir');
+    addLog('✗ Sin token de GitHub — hacé click en 🔑 Token para configurarlo','err');
+    return;
+  }
   const now=new Date();
   const {week,year}=getISOWeek(now);
   const weekStr=`Semana ${week} / ${year}`;
@@ -1622,7 +1658,7 @@ async function processUploadFiles(files){
 }
 
 async function ghGetSHA(path){
-  const r=await fetch(`${GH_API}/${path}`,{headers:{Authorization:`token ${GH_TOKEN}`,Accept:'application/vnd.github.v3+json'}});
+  const r=await fetch(`${GH_API}/${path}`,{headers:{Authorization:`token ${getGHToken()}`,Accept:'application/vnd.github.v3+json'}});
   if(r.status===404) return null;
   if(!r.ok) throw new Error(`SHA ${path}: HTTP ${r.status}`);
   return (await r.json()).sha||null;
@@ -1635,7 +1671,7 @@ async function ghPutFile(path,uint8arr,message){
   const sha=await ghGetSHA(path);
   const body={message,content,branch:'main'};
   if(sha) body.sha=sha;
-  const r=await fetch(`${GH_API}/${path}`,{method:'PUT',headers:{Authorization:`token ${GH_TOKEN}`,Accept:'application/vnd.github.v3+json','Content-Type':'application/json'},body:JSON.stringify(body)});
+  const r=await fetch(`${GH_API}/${path}`,{method:'PUT',headers:{Authorization:`token ${getGHToken()}`,Accept:'application/vnd.github.v3+json','Content-Type':'application/json'},body:JSON.stringify(body)});
   if(!r.ok){const err=await r.json().catch(()=>({}));throw new Error(err.message||`HTTP ${r.status}`);}
   return await r.json();
 }
@@ -1656,6 +1692,46 @@ async function loadUploadMeta(){
 
 loadUploadMeta();
 
+// ── TOKEN MODAL ───────────────────────────────────────────────────────────────
+function openTokenModal(){
+  document.getElementById('tokenInput').value = getGHToken();
+  document.getElementById('tokenModal').classList.add('show');
+  document.getElementById('tokenInput').focus();
+}
+function closeTokenModal(){
+  document.getElementById('tokenModal').classList.remove('show');
+}
+function saveToken(){
+  const t = document.getElementById('tokenInput').value.trim();
+  if(!t){ alert('Ingresá un token válido'); return; }
+  setGHToken(t);
+  closeTokenModal();
+  updTokenStatus();
+}
+function updTokenStatus(){
+  const t = getGHToken();
+  const el = document.getElementById('tokenStatus');
+  if(t){ el.textContent='Token configurado ✓'; el.className='token-status ok'; }
+  else { el.textContent='Sin token — subida deshabilitada'; el.className='token-status err'; }
+}
+// Check on boot
+document.addEventListener('DOMContentLoaded', updTokenStatus);
+updTokenStatus();
+
 </script>
+
+<!-- TOKEN MODAL -->
+<div class="modal-overlay" id="tokenModal" onclick="if(event.target===this)closeTokenModal()">
+  <div class="modal-box">
+    <div class="modal-title">Token de GitHub</div>
+    <div class="modal-desc">El token se guarda en tu navegador (localStorage) y nunca se sube al repo.<br>Necesita el scope <code>repo</code>.</div>
+    <input type="password" id="tokenInput" class="modal-input" placeholder="ghp_…" autocomplete="off">
+    <div class="modal-actions">
+      <button class="btn outline" onclick="closeTokenModal()">Cancelar</button>
+      <button class="btn" onclick="saveToken()">Guardar</button>
+    </div>
+  </div>
+</div>
+
 </body>
 </html>
