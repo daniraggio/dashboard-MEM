@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Dashboard MEM — Consumo & Contratos v16</title>
+<title>Dashboard MEM — Consumo & Contratos v17</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Bricolage+Grotesque:wght@400;600;800&display=swap" rel="stylesheet">
@@ -11,7 +11,7 @@
 <!--
 ================================================================================
 DASHBOARD MEM UNIFICADO — DOCUMENTACIÓN INTERNA (solo para Claude)
-Versión: 16
+Versión: 17
 Repositorio: daniraggio/dashboard-MEM
 URL: https://daniraggio.github.io/dashboard-MEM/
 ================================================================================
@@ -61,6 +61,10 @@ Unificación autónoma de consumos y contratos. Todos los datos viven en este mi
   - Cache sessionStorage: XLSX cacheados en base64. Clave: CACHE_VERSION + '_' + url.
     Cambiar CACHE_VERSION invalida todo el cache.
   - Renderizado virtual en tabla: solo filas visibles + BUFFER. ROW_H=41px.
+  - CONTRACT_INDEX (Map): NEMO → {direct,grupales,all}. Reconstruir con
+    buildContractIndex() cada vez que CONTRACTS cambia. getContractsByNemo es O(1).
+  - Debounce 220ms en buscador (#searchInput) y filtros de columna (colFilter)
+    para no recalcular filtered()/refresh() en cada tecla.
 
 ## REGLAS PARA CLAUDE AL EDITAR
   1. VERSIÓN: incrementar en: este comentario (Versión:), <title>, versionBadge innerHTML.
@@ -89,6 +93,12 @@ v16: Tema oscuro — paleta inspirada en dashboard "Estado Alto Valle" (navy osc
     Todas las variables :root + colores de gráficos (TC, TBG, GRID, scales, líneas Total)
     actualizados. Botones con fondo de color brillante usan texto var(--bg) (oscuro) en
     vez de #fff para contraste.
+v17: Fix de performance — CONTRACT_INDEX (Map NEMO→{direct,grupales,all}) precomputado
+    en buildContractIndex(), llamado tras cada actualización de CONTRACTS (loadContratos,
+    boot, subida de XLSX). getContractsByNemo ahora es O(1) en vez de filter() sobre
+    todos los contratos por cada uno de los ~9791 clientes en cada refresh().
+    Además: debounce de 220ms en buscador y en filtros de columna (colFilter) para
+    no recalcular en cada tecla.
 ================================================================================
 -->
 
@@ -367,7 +377,7 @@ tr.vt-pad td { padding:0; border:none; background:transparent; }
   <div>
     <div class="eyebrow">
       Sistema de Análisis Energético — MEM
-      <span class="version-badge">v16 UNIFICADO</span>
+      <span class="version-badge">v17 UNIFICADO</span>
     </div>
     <h1>Grandes Usuarios<br><span>&amp; Contratos</span></h1>
   </div>
@@ -826,6 +836,7 @@ async function loadContratos(){
     setS('K','err',`Sin contratos · verificá /data/contratos/ en el repo`);
     console.error('[Contratos] Sin datos. Errores:', errores);
   }
+  buildContractIndex();
   refresh();
 }
 
@@ -1008,16 +1019,41 @@ function extractNemoFromSuministro(su){
   return (match ? match[1] : String(su)).trim().toUpperCase();
 }
 
-function getContractsByNemo(nemo){
-  const nUp=nemo.toUpperCase();
-  const direct=CONTRACTS.filter(c=>extractNemoFromSuministro(c['Suministro / grupo dem.'])===nUp);
-  const grupales=CONTRACTS.filter(c=>{
-    const tc=(c['Tipo contrato']||'').toLowerCase();
-    if(!tc.includes('grupal')) return false;
-    if(direct.some(d=>d['Nro contrato']===c['Nro contrato'])) return false;
-    return getPuntosSuministro(c['Nro contrato']).some(p=>p.toUpperCase()===nUp);
+// Índice precomputado NEMO → {direct, grupales, all} para lookups O(1).
+// Se reconstruye cada vez que CONTRACTS cambia (ver buildContractIndex()).
+let CONTRACT_INDEX = new Map();
+
+function buildContractIndex(){
+  CONTRACT_INDEX = new Map();
+  const directByContract = new Map(); // nroContrato → NEMO directo (o '' si no aplica)
+  const get = nemo => {
+    if(!CONTRACT_INDEX.has(nemo)) CONTRACT_INDEX.set(nemo,{direct:[],grupales:[],all:[]});
+    return CONTRACT_INDEX.get(nemo);
+  };
+  // 1. Contratos directos
+  CONTRACTS.forEach(c=>{
+    const nemo=extractNemoFromSuministro(c['Suministro / grupo dem.']);
+    directByContract.set(c['Nro contrato'], nemo);
+    if(!nemo) return;
+    get(nemo).direct.push(c);
   });
-  return{direct,grupales,all:[...direct,...grupales]};
+  // 2. Contratos grupales (excluyendo el NEMO que ya es directo de ese contrato)
+  CONTRACTS.forEach(c=>{
+    const tc=(c['Tipo contrato']||'').toLowerCase();
+    if(!tc.includes('grupal')) return;
+    const directNemo=directByContract.get(c['Nro contrato'])||'';
+    getPuntosSuministro(c['Nro contrato']).forEach(p=>{
+      const pUp=p.toUpperCase();
+      if(pUp===directNemo) return;
+      get(pUp).grupales.push(c);
+    });
+  });
+  // 3. Combinar
+  CONTRACT_INDEX.forEach(v=>{ v.all=[...v.direct,...v.grupales]; });
+}
+
+function getContractsByNemo(nemo){
+  return CONTRACT_INDEX.get(nemo.toUpperCase())||{direct:[],grupales:[],all:[]};
 }
 
 function getPuntosSuministro(nroContrato){
@@ -1101,18 +1137,22 @@ function sortedData(data){
   });
 }
 function colFilter(){
-  CF={};
-  const gf=id=>{const v=document.getElementById(id)?.value.trim().toLowerCase();return v||null;};
-  const gn=id=>{const v=parseFloat(document.getElementById(id)?.value);return isNaN(v)?null:v;};
-  const fn=gf('fName');if(fn)CF.name=fn;
-  const fno=gf('fNemo');if(fno)CF.nemo=fno;
-  const ft=gf('fType');if(ft)CF.type=ft;
-  const fd=gf('fDist');if(fd)CF.dist=fd;
-  const faMin=gn('fAnnMin');if(faMin!=null)CF.annMin=faMin;
-  const faMax=gn('fAnnMax');if(faMax!=null)CF.annMax=faMax;
-  for(let i=0;i<12;i++){const v=gn('fm'+i);if(v!=null)CF['m'+i]=v;}
-  refresh();
+  clearTimeout(_colFilterDebounce);
+  _colFilterDebounce=setTimeout(()=>{
+    CF={};
+    const gf=id=>{const v=document.getElementById(id)?.value.trim().toLowerCase();return v||null;};
+    const gn=id=>{const v=parseFloat(document.getElementById(id)?.value);return isNaN(v)?null:v;};
+    const fn=gf('fName');if(fn)CF.name=fn;
+    const fno=gf('fNemo');if(fno)CF.nemo=fno;
+    const ft=gf('fType');if(ft)CF.type=ft;
+    const fd=gf('fDist');if(fd)CF.dist=fd;
+    const faMin=gn('fAnnMin');if(faMin!=null)CF.annMin=faMin;
+    const faMax=gn('fAnnMax');if(faMax!=null)CF.annMax=faMax;
+    for(let i=0;i<12;i++){const v=gn('fm'+i);if(v!=null)CF['m'+i]=v;}
+    refresh();
+  }, 220);
 }
+let _colFilterDebounce=null;
 function toggleCols(){ showM=!showM; const btn=document.getElementById('btnCols'); btn.textContent=showM?'Ocultar meses':'Mostrar meses'; btn.classList.toggle('on',!showM); applyColVis(); }
 function applyColVis(){ document.querySelectorAll('#tbl .col-m').forEach(el=>{el.style.display=showM?'':'none';}); document.getElementById('tbl').classList.toggle('compact',!showM); }
 
@@ -1470,7 +1510,12 @@ function initColResize(){
 }
 
 // ── EVENTS ────────────────────────────────────────────────────────────────────
-document.getElementById('searchInput').addEventListener('input',e=>{aTerm=e.target.value;syncFilterUI();refresh();});
+let _searchDebounce=null;
+document.getElementById('searchInput').addEventListener('input',e=>{
+  const val=e.target.value;
+  clearTimeout(_searchDebounce);
+  _searchDebounce=setTimeout(()=>{ aTerm=val; syncFilterUI(); refresh(); }, 220);
+});
 document.querySelectorAll('.filter-btn[data-type]').forEach(b=>b.addEventListener('click',()=>setType(b.dataset.type)));
 document.addEventListener('keydown',e=>{if(e.key==='Escape')closePanel();});
 document.getElementById('tableWrap').addEventListener('scroll',function(){ vtRender(this.scrollTop); }, {passive:true});
@@ -1482,6 +1527,7 @@ updSortH();
 
 // Precargar datos base embebidos de contratos
 CONTRACTS=[...ALL_CONTRATOS_BASE];
+buildContractIndex();
 if(CONTRACTS.length){
   setS('K','ok',`${CONTRACTS.length} contratos (base embebida)`);
 } else {
@@ -1638,6 +1684,7 @@ async function processUploadFiles(files){
       }
     });
     Object.assign(SUMINISTROS_BY_CONTRACT,suministros);
+    buildContractIndex();
     addLog(`✓ Sesión actualizada — ${CONTRACTS.length} contratos`,'ok');
     setS('K','ok',`${CONTRACTS.length} contratos · ${weekStr}`);
     refresh();
