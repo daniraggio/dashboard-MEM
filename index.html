@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Dashboard MEM — Consumo & Contratos v17</title>
+<title>Dashboard MEM — Consumo & Contratos v22</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Bricolage+Grotesque:wght@400;600;800&display=swap" rel="stylesheet">
@@ -11,7 +11,7 @@
 <!--
 ================================================================================
 DASHBOARD MEM UNIFICADO — DOCUMENTACIÓN INTERNA (solo para Claude)
-Versión: 17
+Versión: 22
 Repositorio: daniraggio/dashboard-MEM
 URL: https://daniraggio.github.io/dashboard-MEM/
 ================================================================================
@@ -22,6 +22,10 @@ Unificación autónoma de consumos y contratos. Todos los datos viven en este mi
   - Contratos:  daniraggio/dashboard-MEM → /data/contratos/{CONTRATOS,TOPES,SUMINISTROS,
                                             PARAMETROS_VARIABLES,CARACTERISTICAS}.xlsx
                                          → /data/contratos/contratos_nuevos.json
+  - Historial de compras: daniraggio/dashboard-MEM → /data/contratos/HISTORIAL_COMPRAS.xlsx
+                                         (energía comprada y $ pagado por NEMO, mes a mes,
+                                         desglosado por generador y comercializador — ver
+                                         sección "HISTORIAL DE COMPRAS" más abajo)
 
 ## REPOSITORIOS VINCULADOS
   - Todo en: daniraggio/dashboard-MEM
@@ -56,6 +60,36 @@ Unificación autónoma de consumos y contratos. Todos los datos viven en este mi
 ## VIGENCIA DE CONTRATOS
   Un contrato es vigente si: inicio_str <= hoy <= fin_str.
   volumenVigente(nemo) suma tope_anual_mwh de contratos vigentes (excluye tope_proporcional).
+
+## HISTORIAL DE COMPRAS (v18)
+  Fuente: DTE mensual de CAMMESA, tablas MATRenov (energía renovable) y
+  ANEXO_MAT_CONTRATOS (energía no renovable / MATER térmico). Se pre-agregó offline
+  (12 meses, jul-2025 a jun-2026) por NEMO + generador + comercializador + tipo, sumando
+  los distintos "CONJUNTO" que puede tener un mismo generador. Formato ancho en
+  /data/contratos/HISTORIAL_COMPRAS.xlsx:
+    NEMO, GENERADOR, COMERCIALIZADOR, TIPO (Renovable|No Renovable),
+    E_2025-07..E_2026-06 (energía MWh por mes), I_2025-07..I_2026-06 (importe $ por mes),
+    E_TOTAL, I_TOTAL.
+  ⚠ Los importes vienen en PESOS (ARS) desde el DTE (no trae tipo de cambio propio).
+  Desde v19, HISTORIAL_COMPRAS.xlsx tiene una segunda hoja "TC_Mensual" (MES, TC ARS/USD)
+  cargada a mano (fuente: la persona que mantiene el dashboard). parseTcSheet() la lee a
+  TC_MENSUAL{'2025-07':1351.833,...}. importeToUsd(arr) divide cada mes del array de
+  importe ARS por el TC de ese mes. Si la hoja no está, el toggle "Importe (USD)" se
+  deshabilita y se avisa en el modal — nunca se inventa un TC.
+  Para actualizar el TC de un mes: editar la hoja TC_Mensual del xlsx (no hace falta
+  tocar código).
+  PURCHASES[]: array parseado. PURCHASE_INDEX (Map NEMO→registros): O(1) lookup,
+  reconstruir con buildPurchaseIndex() tras cada carga.
+  UI (v21): NO es un modal. El side-panel (#sidePanel) tiene dos columnas fijas y
+  SIEMPRE visibles juntas (#panelCols → #panelColLeft 580px con los contratos +
+  #panelColRight con el historial, ancho --panel-w = min(1600px,96vw)). openPanel()
+  llama a showHistColumn(nemo) automáticamente al abrir cualquier NEMO — no hay
+  botón/click intermedio. Métricas del panel derecho: SOLO "Energía (MWh)" y
+  "Precio Energía (USD/MWh)" (=importeUsd/energia por fila y mes; fila de abajo
+  muestra el promedio ponderado mensual, no una suma — el precio no es sumable).
+  Filtro Renovable/No Renovable/Todos se mantiene. Si el metric es precio, el
+  gráfico cambia de barras apiladas (energía, por generador) a una línea con el
+  precio promedio ponderado mensual (no tiene sentido apilar precios).
 
 ## PERFORMANCE
   - Cache sessionStorage: XLSX cacheados en base64. Clave: CACHE_VERSION + '_' + url.
@@ -99,6 +133,38 @@ v17: Fix de performance — CONTRACT_INDEX (Map NEMO→{direct,grupales,all}) pr
     todos los contratos por cada uno de los ~9791 clientes en cada refresh().
     Además: debounce de 220ms en buscador y en filtros de columna (colFilter) para
     no recalcular en cada tecla.
+v18: Historial de compras — nueva fuente /data/contratos/HISTORIAL_COMPRAS.xlsx
+    (energía MWh + importe $ por NEMO×generador×comercializador×mes, 12 meses,
+    pre-agregada offline desde MATRenov/ANEXO_MAT_CONTRATOS del DTE). Botón dentro
+    del side-panel abre un modal grande nuevo (.modal-lg) con tabla generador×mes
+    (toggle Energía/Importe) y filtro por tipo. Importes en pesos (sin TC disponible
+    en el DTE todavía).
+v19: Tipo de cambio mensual — hoja "TC_Mensual" agregada a HISTORIAL_COMPRAS.xlsx
+    (MES, TC ARS/USD, cargado a mano). Nuevo toggle "Importe (USD)" en el modal de
+    historial (importeToUsd() divide el importe ARS por el TC de cada mes). Si falta
+    la hoja, el botón USD se deshabilita en vez de inventar un tipo de cambio.
+v20: Historial de compras integrado al side-panel (ya no es un modal aparte). El
+    side-panel pasa a tener dos columnas: izquierda fija (580px, info de contratos,
+    sin cambios) y derecha (historial de compras), oculta hasta que se clickea "Ver
+    historial de compras". Al abrirse, --panel-w crece de 580px a min(1600px,96vw)
+    con una transición suave. collapseHistColumn() resetea todo (columna, ancho,
+    chart) al cambiar de NEMO o cerrar el panel.
+v21: Columna derecha SIEMPRE desplegada (ya no hay click intermedio ni colapso;
+    showHistColumn(nemo) se llama directo desde openPanel()). --panel-w pasa a ser
+    fijo en min(1600px,96vw) por defecto. Métricas simplificadas: se sacó Importe
+    ARS/USD, quedan solo "Energía (MWh)" y "Precio Energía (USD/MWh)" (importeUsd
+    dividido por energía, por fila y por mes). El total de la fila/mes para precio
+    es un promedio ponderado (no una suma). Gráfico cambia de barras apiladas
+    (energía) a línea (precio promedio mensual) según la métrica activa.
+v22: Panel izquierdo más angosto (580px→420px) y --panel-w más ancho
+    (min(1600,96vw)→min(1900,98vw)) para que entre más info sin scroll; gráfico y
+    tabla del historial más compactos (menos alto/padding). Orden de la tabla fijo
+    e independiente de la pestaña Energía/Precio: firstActiveMonthIndex(p) ordena
+    por el primer mes con energía>0 dentro de la ventana de 12m (generadores más
+    "viejos" arriba, incorporados más recientemente abajo), no por el total de la
+    métrica activa. Formato de energía específico de esta tabla (fmtEnergiaTable):
+    MWh sin decimales, GWh con un decimal — distinto del fmtMwh global que usa el
+    resto del dashboard.
 ================================================================================
 -->
 
@@ -114,7 +180,7 @@ v17: Fix de performance — CONTRACT_INDEX (Map NEMO→{direct,grupales,all}) pr
   --red:#f87171; --red-bg:#2d1820;
   --gray-bg:#232c42;
   --purple:#a78bfa; --purple-bg:#241f3f; --purple-text:#c4b5fd;
-  --panel-w: 580px;
+  --panel-w: min(1900px, 98vw);
 }
 *,*::before,*::after { box-sizing: border-box; margin: 0; padding: 0; }
 html { scroll-behavior: smooth; }
@@ -325,22 +391,31 @@ tr.vt-pad td { padding:0; border:none; background:transparent; }
 .log-warn { color: var(--amber); }
 .log-info { color: var(--ink3); }
 
-.side-panel { position:fixed; top:0; right:0; bottom:0; width:var(--panel-w); max-width:100vw; background:var(--surface); border-left:2px solid var(--ink); z-index:1000; overflow-y:auto; transform:translateX(100%); transition:transform 0.35s cubic-bezier(.4,0,.2,1); display:flex; flex-direction:column; }
+.side-panel { position:fixed; top:0; right:0; bottom:0; width:var(--panel-w); max-width:100vw; background:var(--surface); border-left:2px solid var(--ink); z-index:1000; overflow:hidden; transform:translateX(100%); transition:transform 0.35s cubic-bezier(.4,0,.2,1), width 0.3s cubic-bezier(.4,0,.2,1); display:flex; flex-direction:column; }
 .side-panel.open { transform:translateX(0); }
+.panel-cols { display:flex; flex-direction:row; height:100%; overflow:hidden; }
+.panel-col-left { width:420px; min-width:420px; flex-shrink:0; display:flex; flex-direction:column; height:100%; overflow-y:auto; }
+.panel-col-right { flex:1; min-width:0; height:100%; overflow-y:auto; display:flex; flex-direction:column; border-left:1.5px solid var(--border); background:var(--bg2); }
+.hist-col-subtitle { font-family:'DM Mono',monospace; font-size:10px; letter-spacing:1.5px; text-transform:uppercase; color:var(--purple); margin-top:6px; }
 .panel-header { padding:20px 24px 16px; border-bottom:1.5px solid var(--border); position:sticky; top:0; background:var(--surface); z-index:2; display:flex; align-items:flex-start; justify-content:space-between; gap:12px; }
+.panel-col-right .panel-header { background:var(--bg2); }
 .panel-client-name { font-size:17px; font-weight:800; color:var(--ink); line-height:1.2; max-width:400px; }
 .panel-nemo { font-family:'DM Mono',monospace; font-size:11px; color:var(--ink3); margin-top:4px; }
 .panel-close { background:none; border:1.5px solid var(--border); border-radius:6px; width:32px; height:32px; cursor:pointer; font-size:16px; color:var(--ink2); display:flex; align-items:center; justify-content:center; transition:all 0.15s; flex-shrink:0; }
 .panel-close:hover { background:var(--ink); color:var(--bg); border-color:var(--ink); }
 .panel-body { padding:20px 24px; flex:1; }
+.panel-col-right .panel-header { padding:14px 24px 10px; }
+.panel-col-right .panel-body { padding:12px 24px 20px; }
 .panel-section-title { font-family:'DM Mono',monospace; font-size:10px; letter-spacing:3px; text-transform:uppercase; color:var(--ink3); margin-bottom:14px; padding-bottom:8px; border-bottom:1px solid var(--border); }
 .panel-stats { display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px; margin-bottom:20px; }
 .panel-stat { background:var(--bg2); border-radius:6px; padding:10px 12px; }
+.panel-col-right .panel-stat { background:var(--surface); padding:8px 10px; }
 .panel-stat-lbl { font-family:'DM Mono',monospace; font-size:9px; letter-spacing:1.5px; text-transform:uppercase; color:var(--ink3); margin-bottom:4px; }
 .panel-stat-val { font-size:16px; font-weight:800; color:var(--ink); }
 .panel-stat-val.c-blue  { color:var(--blue); }
 .panel-stat-val.c-green { color:var(--gume); }
 .panel-stat-val.c-amber { color:var(--amber); }
+.panel-stat-val.c-purple{ color:var(--purple); }
 .contract-card { background:var(--bg2); border:1.5px solid var(--border); border-radius:8px; padding:14px 16px; margin-bottom:10px; transition:border-color 0.15s; }
 .contract-card:hover { border-color:var(--blue); }
 .contract-card-header { display:flex; align-items:flex-start; justify-content:space-between; gap:8px; margin-bottom:10px; }
@@ -367,6 +442,31 @@ tr.vt-pad td { padding:0; border:none; background:transparent; }
 .panel-loading { text-align:center; padding:32px 16px; font-family:'DM Mono',monospace; font-size:12px; color:var(--ink3); }
 .panel-overlay { display:none; position:fixed; inset:0; background:rgba(5,8,14,.55); z-index:999; backdrop-filter:blur(2px); }
 .panel-overlay.show { display:block; }
+
+/* ── PANEL DERECHO (historial de compras, dentro del side-panel) ──────────────── */
+.hist-toolbar { display:flex; align-items:center; justify-content:space-between; gap:16px; margin-bottom:12px; flex-wrap:wrap; }
+.hist-toggle-group { display:flex; gap:6px; background:var(--bg2); border:1.5px solid var(--border); border-radius:8px; padding:3px; }
+.hist-toggle-btn { font-family:'DM Mono',monospace; font-size:11px; font-weight:600; padding:6px 14px; border-radius:6px; border:none; background:transparent; color:var(--ink3); cursor:pointer; transition:all 0.15s; }
+.hist-toggle-btn.active { background:var(--purple); color:var(--bg); }
+.hist-filter-group { display:flex; gap:6px; }
+.hist-filter-btn { font-family:'DM Mono',monospace; font-size:11px; padding:6px 12px; border-radius:6px; border:1.5px solid var(--border); background:transparent; color:var(--ink2); cursor:pointer; transition:all 0.15s; }
+.hist-filter-btn.active { border-color:var(--green); color:var(--green-text); background:var(--green-bg); }
+.hist-chart-wrap { height:160px; margin-bottom:16px; }
+.hist-table-wrap { overflow-x:auto; border:1.5px solid var(--border); border-radius:8px; }
+table.hist-table { width:100%; border-collapse:collapse; }
+table.hist-table thead tr th { position:sticky; top:0; background:var(--bg2); font-family:'DM Mono',monospace; font-size:9px; letter-spacing:.8px; text-transform:uppercase; color:var(--ink3); padding:6px 8px; text-align:right; border-bottom:1.5px solid var(--border); white-space:nowrap; }
+table.hist-table thead tr th:first-child, table.hist-table thead tr th:nth-child(2), table.hist-table thead tr th:nth-child(3) { text-align:left; }
+table.hist-table tbody tr { border-bottom:1px solid var(--bg2); }
+table.hist-table tbody tr:hover { background:var(--bg2); }
+table.hist-table tbody tr.hist-total-row { background:var(--bg2); font-weight:700; }
+table.hist-table tbody td { padding:5px 8px; text-align:right; font-family:'DM Mono',monospace; font-size:11px; color:var(--ink2); white-space:nowrap; }
+table.hist-table tbody td.hist-td-gen { text-align:left; font-family:'Bricolage Grotesque',sans-serif; font-weight:600; font-size:12px; color:var(--ink); max-width:160px; overflow:hidden; text-overflow:ellipsis; }
+table.hist-table tbody td.hist-td-com { text-align:left; font-size:10px; color:var(--ink3); max-width:120px; overflow:hidden; text-overflow:ellipsis; }
+table.hist-table tbody td.hist-td-tipo { text-align:left; }
+.hist-tipo-tag { font-size:9px; font-weight:600; padding:2px 6px; border-radius:3px; }
+.hist-tipo-tag.r  { background:var(--green-bg); color:var(--green-text); }
+.hist-tipo-tag.nr { background:var(--amber-bg); color:var(--amber); }
+.hist-empty { text-align:center; padding:40px 16px; font-family:'DM Mono',monospace; font-size:13px; color:var(--ink3); }
 </style>
 </head>
 <body>
@@ -377,7 +477,7 @@ tr.vt-pad td { padding:0; border:none; background:transparent; }
   <div>
     <div class="eyebrow">
       Sistema de Análisis Energético — MEM
-      <span class="version-badge">v17 UNIFICADO</span>
+      <span class="version-badge">v22 UNIFICADO</span>
     </div>
     <h1>Grandes Usuarios<br><span>&amp; Contratos</span></h1>
   </div>
@@ -601,15 +701,31 @@ tr.vt-pad td { padding:0; border:none; background:transparent; }
 
 <!-- SIDE PANEL -->
 <div class="side-panel" id="sidePanel">
-  <div class="panel-header">
-    <div>
-      <div class="panel-client-name" id="panelClientName">—</div>
-      <div class="panel-nemo" id="panelClientNemo"></div>
+  <div class="panel-cols" id="panelCols">
+    <div class="panel-col-left" id="panelColLeft">
+      <div class="panel-header">
+        <div>
+          <div class="panel-client-name" id="panelClientName">—</div>
+          <div class="panel-nemo" id="panelClientNemo"></div>
+        </div>
+        <button class="panel-close" onclick="closePanel()" title="Cerrar">✕</button>
+      </div>
+      <div class="panel-body" id="panelBody">
+        <div class="panel-empty">Seleccioná un cliente con contratos para ver el detalle</div>
+      </div>
     </div>
-    <button class="panel-close" onclick="closePanel()" title="Cerrar">✕</button>
-  </div>
-  <div class="panel-body" id="panelBody">
-    <div class="panel-empty">Seleccioná un cliente con contratos para ver el detalle</div>
+    <div class="panel-col-right" id="panelColRight">
+      <div class="panel-header">
+        <div>
+          <div class="panel-client-name" id="histClientName">—</div>
+          <div class="panel-nemo" id="histClientNemo"></div>
+          <div class="hist-col-subtitle">Historial de compras · 12 meses</div>
+        </div>
+      </div>
+      <div class="panel-body" id="histModalBody">
+        <div class="hist-empty">Cargando…</div>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -668,6 +784,18 @@ const CONTRATOS_FILES = [
   'PARAMETROS VARIABLES.xlsx',
   'CARACTERISTICAS.xlsx',
 ];
+
+// Historial de compras (v18): energía + importe por NEMO×generador×comercializador, 12 meses
+const HISTORIAL_FILE  = 'HISTORIAL_COMPRAS.xlsx';
+const HIST_MONTH_KEYS = ['2025-07','2025-08','2025-09','2025-10','2025-11','2025-12','2026-01','2026-02','2026-03','2026-04','2026-05','2026-06'];
+const HIST_MONTH_LBL  = ['Jul-25','Ago-25','Sep-25','Oct-25','Nov-25','Dic-25','Ene-26','Feb-26','Mar-26','Abr-26','May-26','Jun-26'];
+let PURCHASES = [];              // registros parseados de HISTORIAL_COMPRAS.xlsx
+let PURCHASE_INDEX = new Map();  // NEMO (upper) -> [registros]
+let TC_MENSUAL = {};             // '2025-07' -> TC ARS/USD, desde hoja TC_Mensual del xlsx
+let histNemo = null;
+let histMetric = 'energia';      // 'energia' | 'precio'
+let histTipo = 'todos';          // 'todos' | 'Renovable' | 'No Renovable'
+let cHistChart = null;
 
 const NAMES = {
   'AARGTAOY':'AEROP ARG 2000 - Aeroparque','ABRILHCY':'ABRIL CLUB DE CAMPO',
@@ -745,6 +873,77 @@ function parseConsumosFile(buf,type){
     const annual=r[14]!=null?Number(r[14]):null;
     return{id:clientNemo,name:gname(clientNemo),type,dist:distNemo?gname(distNemo):'',monthly,annual};
   }).filter(Boolean);
+}
+
+// ════════════════════════════════════════════════════════════════════════════════
+// HISTORIAL DE COMPRAS (v18) — energía + importe por NEMO×generador, 12 meses
+// ════════════════════════════════════════════════════════════════════════════════
+async function loadHistorialCompras(){
+  try{
+    const buf = await getXlsx(BASE_CONT + HISTORIAL_FILE);
+    const wb = XLSX.read(buf,{type:'array'});
+    PURCHASES = parsePurchasesSheet(wb);
+    TC_MENSUAL = parseTcSheet(wb);
+    buildPurchaseIndex();
+    console.log(`[Historial] ${PURCHASES.length} registros · ${PURCHASE_INDEX.size} NEMOs · TC: ${Object.keys(TC_MENSUAL).length} meses`);
+  }catch(e){
+    console.warn('[Historial] No se pudo cargar HISTORIAL_COMPRAS.xlsx:', e.message);
+    PURCHASES = [];
+    PURCHASE_INDEX = new Map();
+    TC_MENSUAL = {};
+  }
+}
+
+function parsePurchasesSheet(wb){
+  const sheetName = wb.SheetNames.find(n=>n==='Historial_Compras') || wb.SheetNames[0];
+  const rows = XLSX.utils.sheet_to_json(wb.Sheets[sheetName],{header:1});
+  if(rows.length < 2) return [];
+  return rows.slice(1).map(r=>{
+    const nemo = String(r[0]||'').trim();
+    if(!nemo) return null;
+    const gen  = String(r[1]||'').trim();
+    const com  = String(r[2]||'').trim();
+    const tipo = String(r[3]||'').trim();
+    const energia = Array.from({length:12},(_,i)=>{const v=r[4+i]; return(v!=null&&v!=='')?Number(v):0;});
+    const importe = Array.from({length:12},(_,i)=>{const v=r[16+i]; return(v!=null&&v!=='')?Number(v):0;});
+    const eTotal = r[28]!=null&&r[28]!==''?Number(r[28]):energia.reduce((a,b)=>a+b,0);
+    const iTotal = r[29]!=null&&r[29]!==''?Number(r[29]):importe.reduce((a,b)=>a+b,0);
+    return{nemo,gen,com,tipo,energia,importe,eTotal,iTotal};
+  }).filter(Boolean);
+}
+
+function parseTcSheet(wb){
+  const sheetName = wb.SheetNames.find(n=>n==='TC_Mensual');
+  const tc = {};
+  if(!sheetName) return tc;
+  const rows = XLSX.utils.sheet_to_json(wb.Sheets[sheetName],{header:1});
+  rows.slice(1).forEach(r=>{
+    const mes = String(r[0]||'').trim();
+    const val = Number(r[1]);
+    if(mes && !isNaN(val)) tc[mes]=val;
+  });
+  return tc;
+}
+
+function buildPurchaseIndex(){
+  PURCHASE_INDEX = new Map();
+  PURCHASES.forEach(p=>{
+    const k = p.nemo.toUpperCase();
+    if(!PURCHASE_INDEX.has(k)) PURCHASE_INDEX.set(k,[]);
+    PURCHASE_INDEX.get(k).push(p);
+  });
+}
+
+function getPurchasesByNemo(nemo){
+  return PURCHASE_INDEX.get(String(nemo||'').toUpperCase()) || [];
+}
+
+// convierte un array de 12 importes ARS a USD usando TC_MENSUAL (por mes, HIST_MONTH_KEYS)
+function importeToUsd(importeArr){
+  return importeArr.map((v,i)=>{
+    const tc = TC_MENSUAL[HIST_MONTH_KEYS[i]];
+    return(tc&&v)?v/tc:0;
+  });
 }
 
 // ════════════════════════════════════════════════════════════════════════════════
@@ -1261,6 +1460,7 @@ function openPanel(e,nemo){
   document.body.classList.add('panel-open');
   refresh();
   renderPanel(nemo);
+  showHistColumn(nemo); // columna derecha: siempre desplegada junto con el panel
 }
 
 function closePanel(){
@@ -1268,6 +1468,8 @@ function closePanel(){
   document.getElementById('sidePanel').classList.remove('open');
   document.getElementById('panelOverlay').classList.remove('show');
   document.body.classList.remove('panel-open');
+  if(cHistChart){ cHistChart.destroy(); cHistChart=null; }
+  histNemo=null;
   refresh();
 }
 
@@ -1351,6 +1553,172 @@ function renderContractCard(c,highlightNemo,isGrupalMember){
     </div>
     ${nemoSection}
   </div>`;
+}
+
+// ════════════════════════════════════════════════════════════════════════════════
+// HISTORIAL DE COMPRAS — columna derecha del side-panel, siempre desplegada (v21)
+// ════════════════════════════════════════════════════════════════════════════════
+function showHistColumn(nemo){
+  histNemo=nemo;
+  histMetric='energia';    // 'energia' | 'precio'
+  histTipo='todos';
+  const gu=ALL.find(d=>d.id===nemo);
+  document.getElementById('histClientName').textContent=gu?gu.name:nemo;
+  document.getElementById('histClientNemo').textContent=nemo;
+  renderHistModal();
+}
+
+function setHistMetric(m){ histMetric=m; renderHistModal(); }
+function setHistTipo(t){ histTipo=t; renderHistModal(); }
+
+function renderHistModal(){
+  const body=document.getElementById('histModalBody');
+  if(!histNemo) return;
+  let rows=getPurchasesByNemo(histNemo);
+  if(histTipo!=='todos') rows=rows.filter(p=>p.tipo===histTipo);
+  if(!rows.length){
+    body.innerHTML='<div class="hist-empty">Sin historial de compras para este NEMO'+(histTipo!=='todos'?' ('+histTipo+')':'')+'.</div>';
+    if(cHistChart){ cHistChart.destroy(); cHistChart=null; }
+    return;
+  }
+
+  const hasTc = Object.keys(TC_MENSUAL).length>0;
+  // importe en USD + precio (USD/MWh) por fila y por mes
+  rows = rows.map(p=>{
+    const importeUsd = importeToUsd(p.importe);
+    const precio = p.energia.map((e,i)=> e ? importeUsd[i]/e : null);
+    const precioProm = p.eTotal ? rowSum(importeUsd)/p.eTotal : null;
+    return{...p, importeUsd, precio, precioProm};
+  });
+
+  const isEnergia = histMetric==='energia';
+  const metricArr   = p => isEnergia ? p.energia : p.precio;
+  const metricTotal = p => isEnergia ? p.eTotal   : p.precioProm;
+  const fmtVal = v => v==null ? '—' : isEnergia ? fmtEnergiaTable(v) : ('U$S '+v.toFixed(1)+'/MWh');
+
+  const totalE=rows.reduce((s,p)=>s+p.eTotal,0);
+  const totalUsd=rows.reduce((s,p)=>s+rowSum(p.importeUsd),0);
+  const precioPromGlobal = totalE ? totalUsd/totalE : null;
+  const nGen=new Set(rows.map(p=>p.gen).filter(Boolean)).size;
+
+  let html=`<div class="hist-toolbar">
+    <div class="hist-filter-group">
+      <button class="hist-filter-btn ${histTipo==='todos'?'active':''}" onclick="setHistTipo('todos')">Todos</button>
+      <button class="hist-filter-btn ${histTipo==='Renovable'?'active':''}" onclick="setHistTipo('Renovable')">Renovable</button>
+      <button class="hist-filter-btn ${histTipo==='No Renovable'?'active':''}" onclick="setHistTipo('No Renovable')">No Renovable</button>
+    </div>
+    <div class="hist-toggle-group">
+      <button class="hist-toggle-btn ${histMetric==='energia'?'active':''}" onclick="setHistMetric('energia')">Energía (MWh)</button>
+      <button class="hist-toggle-btn ${histMetric==='precio'?'active':''}" onclick="setHistMetric('precio')" ${hasTc?'':'disabled title="Sin tipo de cambio cargado"'}>Precio Energía (USD/MWh)</button>
+    </div>
+  </div>`;
+
+  html+=`<div class="panel-stats" style="grid-template-columns:1fr 1fr 1fr;margin-bottom:14px">
+    <div class="panel-stat"><div class="panel-stat-lbl">Energía 12m</div><div class="panel-stat-val c-green">${fmtMwh(totalE)}</div></div>
+    <div class="panel-stat"><div class="panel-stat-lbl">Precio prom. (USD/MWh)</div><div class="panel-stat-val c-purple">${hasTc&&precioPromGlobal!=null?'U$S '+precioPromGlobal.toFixed(1):'—'}</div></div>
+    <div class="panel-stat"><div class="panel-stat-lbl">Generadores</div><div class="panel-stat-val c-blue">${nGen}</div></div>
+  </div>`;
+
+  if(!hasTc){
+    html+=`<div style="font-family:'DM Mono',monospace;font-size:10.5px;color:var(--ink3);margin:-10px 0 16px">⚠ No se encontró la hoja TC_Mensual en HISTORIAL_COMPRAS.xlsx — el precio en USD/MWh no se puede calcular.</div>`;
+  }
+
+  html+=`<div class="hist-chart-wrap"><canvas id="histChartCanvas"></canvas></div>`;
+
+  // tabla: generador en filas, meses en columnas
+  html+=`<div class="hist-table-wrap"><table class="hist-table"><thead><tr>
+    <th>Generador</th><th>Comercializador</th><th>Tipo</th>
+    ${HIST_MONTH_LBL.map(m=>`<th>${m}</th>`).join('')}
+    <th>${isEnergia?'Total':'Prom.'}</th>
+  </tr></thead><tbody>`;
+
+  const sortedRows=[...rows].sort((a,b)=>{
+    const fa=firstActiveMonthIndex(a), fb=firstActiveMonthIndex(b);
+    if(fa!==fb) return fa-fb; // el que aparece primero en la ventana de 12m arriba (más "viejo")
+    return b.eTotal-a.eTotal; // desempate: mayor energía total primero
+  });
+  sortedRows.forEach(p=>{
+    const tcls=p.tipo==='Renovable'?'r':'nr';
+    html+=`<tr>
+      <td class="hist-td-gen" title="${p.gen}">${p.gen||'—'}</td>
+      <td class="hist-td-com" title="${p.com}">${p.com||'—'}</td>
+      <td class="hist-td-tipo"><span class="hist-tipo-tag ${tcls}">${p.tipo}</span></td>
+      ${metricArr(p).map(v=>`<td>${fmtVal(v)}</td>`).join('')}
+      <td><b>${fmtVal(metricTotal(p))}</b></td>
+    </tr>`;
+  });
+
+  // fila de totales / promedio ponderado mensual
+  let monthAgg, grandTotal;
+  if(isEnergia){
+    monthAgg = Array(12).fill(0).map((_,i)=>rows.reduce((s,p)=>s+(p.energia[i]||0),0));
+    grandTotal = totalE;
+  } else {
+    monthAgg = Array(12).fill(0).map((_,i)=>{
+      const e = rows.reduce((s,p)=>s+(p.energia[i]||0),0);
+      const u = rows.reduce((s,p)=>s+(p.importeUsd[i]||0),0);
+      return e ? u/e : null;
+    });
+    grandTotal = precioPromGlobal;
+  }
+  html+=`<tr class="hist-total-row">
+    <td class="hist-td-gen">${isEnergia?'Total':'Promedio'}</td><td></td><td></td>
+    ${monthAgg.map(v=>`<td>${fmtVal(v)}</td>`).join('')}
+    <td>${fmtVal(grandTotal)}</td>
+  </tr>`;
+
+  html+=`</tbody></table></div>`;
+  body.innerHTML=html;
+
+  const ctx=document.getElementById('histChartCanvas');
+  if(cHistChart){ cHistChart.destroy(); cHistChart=null; }
+
+  if(isEnergia){
+    // gráfico apilado: energía mensual por generador (top 8 + "Otros")
+    const topN=8;
+    const byGen=[...rows].sort((a,b)=>b.eTotal-a.eTotal);
+    const top=byGen.slice(0,topN);
+    const rest=byGen.slice(topN);
+    const palette=['#fb923c','#2dd4bf','#5b8def','#a78bfa','#34d399','#fbbf24','#f87171','#4d8fff'];
+    const datasets=top.map((p,i)=>({label:p.gen||'—',data:p.energia,backgroundColor:palette[i%palette.length],stack:'s'}));
+    if(rest.length){
+      const otros=Array(12).fill(0).map((_,i)=>rest.reduce((s,p)=>s+(p.energia[i]||0),0));
+      datasets.push({label:'Otros ('+rest.length+')',data:otros,backgroundColor:'#6b7691',stack:'s'});
+    }
+    cHistChart=new Chart(ctx,{type:'bar',data:{labels:HIST_MONTH_LBL,datasets},options:{
+      responsive:true,maintainAspectRatio:false,
+      plugins:{legend:{position:'bottom',labels:{color:'#9aa7c4',boxWidth:10,font:{size:10}}},tooltip:{callbacks:{label:c=>' '+c.dataset.label+': '+fmtMwh(c.raw)}}},
+      scales:{x:{stacked:true,grid:{display:false},ticks:{color:'#6b7691'}},y:{stacked:true,grid:{color:'#222c44'},ticks:{color:'#6b7691',callback:v=>fmtS(v)}}}
+    }});
+  } else {
+    // precio no es sumable: línea con el precio promedio ponderado mensual (todos los generadores filtrados)
+    cHistChart=new Chart(ctx,{type:'line',data:{labels:HIST_MONTH_LBL,datasets:[{
+      label:'Precio promedio (USD/MWh)', data:monthAgg,
+      borderColor:'#a78bfa', backgroundColor:'rgba(167,139,250,0.12)', borderWidth:2.5, fill:true, tension:0.35,
+      pointRadius:4, pointHoverRadius:7, pointBackgroundColor:'#a78bfa', spanGaps:true
+    }]},options:{
+      responsive:true,maintainAspectRatio:false,
+      plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>c.raw!=null?' U$S '+c.raw.toFixed(1)+'/MWh':' —'}}},
+      scales:{x:{grid:{display:false},ticks:{color:'#6b7691'}},y:{grid:{color:'#222c44'},ticks:{color:'#6b7691',callback:v=>'U$S '+v}}}
+    }});
+  }
+}
+
+function rowSum(arr){ return arr.reduce((a,b)=>a+(b||0),0); }
+
+// mes (0-11) en el que el generador aparece por primera vez con energía>0 dentro
+// de la ventana de 12 meses — se usa como proxy de "antigüedad" para ordenar la tabla.
+function firstActiveMonthIndex(p){
+  for(let i=0;i<12;i++){ if(p.energia[i]) return i; }
+  return 12;
+}
+
+// formato de energía específico para la tabla de historial: MWh sin decimales,
+// GWh con un decimal (distinto del fmtMwh global, que se usa en el resto del dashboard).
+function fmtEnergiaTable(v){
+  if(v==null || !v) return'—';
+  if(v>=1000) return(v/1000).toFixed(1).replace('.',',')+' GWh';
+  return Math.round(v).toLocaleString('es-AR')+' MWh';
 }
 
 // ════════════════════════════════════════════════════════════════════════════════
@@ -1534,7 +1902,7 @@ if(CONTRACTS.length){
   setS('K','loading','Conectando…');
 }
 
-function loadAll(){ loadConsumos(); loadContratos(); }
+function loadAll(){ loadConsumos(); loadContratos(); loadHistorialCompras(); }
 
 // Cargar todo al iniciar
 loadAll();
