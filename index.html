@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Dashboard MEM — Consumo & Contratos v23</title>
+<title>Dashboard MEM — Consumo & Contratos v24</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Bricolage+Grotesque:wght@400;600;800&display=swap" rel="stylesheet">
@@ -11,7 +11,7 @@
 <!--
 ================================================================================
 DASHBOARD MEM UNIFICADO — DOCUMENTACIÓN INTERNA (solo para Claude)
-Versión: 23
+Versión: 24
 Repositorio: daniraggio/dashboard-MEM
 URL: https://daniraggio.github.io/dashboard-MEM/
 ================================================================================
@@ -23,9 +23,10 @@ Unificación autónoma de consumos y contratos. Todos los datos viven en este mi
                                             PARAMETROS_VARIABLES,CARACTERISTICAS}.xlsx
                                          → /data/contratos/contratos_nuevos.json
   - Historial de compras: daniraggio/dashboard-MEM → /data/contratos/HISTORIAL_COMPRAS.xlsx
-                                         (energía comprada y $ pagado por NEMO, mes a mes,
-                                         desglosado por generador y comercializador — ver
-                                         sección "HISTORIAL DE COMPRAS" más abajo)
+                                         (hojas Historial_Compras, TC_Mensual, Spot y
+                                         Potencia_MATP — energía, spot y potencia MATP por
+                                         NEMO, mes a mes — ver sección "HISTORIAL DE COMPRAS"
+                                         más abajo)
 
 ## REPOSITORIOS VINCULADOS
   - Todo en: daniraggio/dashboard-MEM
@@ -191,6 +192,24 @@ v23: Energía comprada a CAMMESA sin contrato ("Mercado Spot"), pico+valle+resto
     disponible a nivel de agente individual en este DTE (solo a nivel del
     distribuidor completo, tabla ANEXO_DIST) — no se agregó fila de Spot para
     clientes tipo GUDI.
+v24: Potencia contratada en el MATP (mercado a término de potencia) — tercera
+    pestaña "Potencia (MW) · MATP", color NARANJA, distinta de Energía/Precio
+    (verde/violeta) para que se note que es otro tipo de contrato (potencia MW,
+    no energía MWh, y sin precio: el DTE no lo trae en el resumen mensual). Fuente:
+    nueva hoja "Potencia_MATP" en HISTORIAL_COMPRAS.xlsx (NEMO, GENERADOR,
+    POT_2025-07..POT_2026-06, POT_PROMEDIO) ← archivos
+    MATP_Complemento_R400_YYYY-MM.xlsx, SOLO su hoja de resumen mensual (nombre
+    variable según el mes: "RESUMEN MENSUAL" nov-25/dic-25/ene-26/feb-26,
+    "GUMES_MENSUAL"+"GUMAS-DI_MENSUAL" abr-26/may-26/jun-26) — nunca se procesó el
+    detalle horario. parsePowerSheet()→POWER_INDEX (Map NEMO→[registros]).
+    ⚠ Cobertura: falta jul-oct 2025 (no se subieron esos archivos) y mar-2026 (ese
+    archivo no tenía hoja de resumen mensual, solo detalle horario — se dejó en
+    blanco a propósito, no se sumó el horario). Vista separada del todo (no
+    comparte filas con Energía/Precio/Spot): sin filtro Renovable/No Renovable
+    (no aplica), con su propio gráfico apilado por generador y fila de totales
+    (la potencia SÍ es sumable entre generadores distintos, a diferencia del
+    precio). fmtPotenciaTable() formatea en MW con 2 decimales, un formato propio
+    de esta vista (no reusa fmtEnergiaTable ni fmtMwh).
 ================================================================================
 -->
 
@@ -206,6 +225,7 @@ v23: Energía comprada a CAMMESA sin contrato ("Mercado Spot"), pico+valle+resto
   --red:#f87171; --red-bg:#2d1820;
   --gray-bg:#232c42;
   --purple:#a78bfa; --purple-bg:#241f3f; --purple-text:#c4b5fd;
+  --orange:#fb923c; --orange-bg:#3a2313; --orange-text:#ffb37a;
   --panel-w: min(1900px, 98vw);
 }
 *,*::before,*::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -442,6 +462,7 @@ tr.vt-pad td { padding:0; border:none; background:transparent; }
 .panel-stat-val.c-green { color:var(--gume); }
 .panel-stat-val.c-amber { color:var(--amber); }
 .panel-stat-val.c-purple{ color:var(--purple); }
+.panel-stat-val.c-orange{ color:var(--orange); }
 .contract-card { background:var(--bg2); border:1.5px solid var(--border); border-radius:8px; padding:14px 16px; margin-bottom:10px; transition:border-color 0.15s; }
 .contract-card:hover { border-color:var(--blue); }
 .contract-card-header { display:flex; align-items:flex-start; justify-content:space-between; gap:8px; margin-bottom:10px; }
@@ -474,6 +495,7 @@ tr.vt-pad td { padding:0; border:none; background:transparent; }
 .hist-toggle-group { display:flex; gap:6px; background:var(--bg2); border:1.5px solid var(--border); border-radius:8px; padding:3px; }
 .hist-toggle-btn { font-family:'DM Mono',monospace; font-size:11px; font-weight:600; padding:6px 14px; border-radius:6px; border:none; background:transparent; color:var(--ink3); cursor:pointer; transition:all 0.15s; }
 .hist-toggle-btn.active { background:var(--purple); color:var(--bg); }
+.hist-toggle-btn.potencia.active { background:var(--orange); color:var(--bg); }
 .hist-filter-group { display:flex; gap:6px; }
 .hist-filter-btn { font-family:'DM Mono',monospace; font-size:11px; padding:6px 12px; border-radius:6px; border:1.5px solid var(--border); background:transparent; color:var(--ink2); cursor:pointer; transition:all 0.15s; }
 .hist-filter-btn.active { border-color:var(--green); color:var(--green-text); background:var(--green-bg); }
@@ -495,6 +517,7 @@ table.hist-table tbody td.hist-td-tipo { text-align:left; }
 .hist-tipo-tag.r  { background:var(--green-bg); color:var(--green-text); }
 .hist-tipo-tag.nr { background:var(--amber-bg); color:var(--amber); }
 .hist-tipo-tag.spot { background:var(--blue); color:#fff; }
+.hist-tipo-tag.potencia { background:var(--orange); color:#1a1005; }
 .hist-empty { text-align:center; padding:40px 16px; font-family:'DM Mono',monospace; font-size:13px; color:var(--ink3); }
 </style>
 </head>
@@ -506,7 +529,7 @@ table.hist-table tbody td.hist-td-tipo { text-align:left; }
   <div>
     <div class="eyebrow">
       Sistema de Análisis Energético — MEM
-      <span class="version-badge">v23 UNIFICADO</span>
+      <span class="version-badge">v24 UNIFICADO</span>
     </div>
     <h1>Grandes Usuarios<br><span>&amp; Contratos</span></h1>
   </div>
@@ -821,6 +844,7 @@ const HIST_MONTH_LBL  = ['Jul-25','Ago-25','Sep-25','Oct-25','Nov-25','Dic-25','
 let PURCHASES = [];              // registros parseados de HISTORIAL_COMPRAS.xlsx (hoja Historial_Compras)
 let PURCHASE_INDEX = new Map();  // NEMO (upper) -> [registros]
 let SPOT_INDEX = new Map();      // NEMO (upper) -> registro spot (hoja Spot), a lo sumo uno por nemo
+let POWER_INDEX = new Map();     // NEMO (upper) -> [registros de potencia MATP (hoja Potencia_MATP)]
 let TC_MENSUAL = {};             // '2025-07' -> TC ARS/USD, desde hoja TC_Mensual del xlsx
 let histNemo = null;
 let histMetric = 'energia';      // 'energia' | 'precio'
@@ -915,14 +939,16 @@ async function loadHistorialCompras(){
     PURCHASES = parsePurchasesSheet(wb);
     TC_MENSUAL = parseTcSheet(wb);
     SPOT_INDEX = parseSpotSheet(wb);
+    POWER_INDEX = parsePowerSheet(wb);
     buildPurchaseIndex();
-    console.log(`[Historial] ${PURCHASES.length} registros · ${PURCHASE_INDEX.size} NEMOs · TC: ${Object.keys(TC_MENSUAL).length} meses · Spot: ${SPOT_INDEX.size} NEMOs`);
+    console.log(`[Historial] ${PURCHASES.length} registros · ${PURCHASE_INDEX.size} NEMOs · TC: ${Object.keys(TC_MENSUAL).length} meses · Spot: ${SPOT_INDEX.size} NEMOs · Potencia: ${POWER_INDEX.size} NEMOs`);
   }catch(e){
     console.warn('[Historial] No se pudo cargar HISTORIAL_COMPRAS.xlsx:', e.message);
     PURCHASES = [];
     PURCHASE_INDEX = new Map();
     TC_MENSUAL = {};
     SPOT_INDEX = new Map();
+    POWER_INDEX = new Map();
   }
 }
 
@@ -986,6 +1012,35 @@ function parseSpotSheet(wb){
 
 function getSpotByNemo(nemo){
   return SPOT_INDEX.get(String(nemo||'').toUpperCase()) || null;
+}
+
+// hoja "Potencia_MATP": NEMO, GENERADOR, POT_2025-07..POT_2026-06 (MW cubiertos ese
+// mes, según la hoja "Resumen Mensual"/"GUMES_MENSUAL"/"GUMAS-DI_MENSUAL" de cada
+// MATP_Complemento_R400_YYYY-MM.xlsx), POT_PROMEDIO. Meses sin dato quedan null —
+// nunca se inventa un valor (no se procesó el detalle horario, solo el resumen
+// mensual, por indicación explícita: si el archivo de un mes no trae esa hoja
+// resumen, ese mes queda vacío).
+function parsePowerSheet(wb){
+  const idx = new Map();
+  const sheetName = wb.SheetNames.find(n=>n==='Potencia_MATP');
+  if(!sheetName) return idx;
+  const rows = XLSX.utils.sheet_to_json(wb.Sheets[sheetName],{header:1});
+  rows.slice(1).forEach(r=>{
+    const nemo = String(r[0]||'').trim();
+    const gen  = String(r[1]||'').trim();
+    if(!nemo || !gen) return;
+    const num = v => (v!=null && v!=='') ? Number(v) : null;
+    const potencia = Array.from({length:12},(_,i)=>num(r[2+i]));
+    const promedio = num(r[14]);
+    const key = nemo.toUpperCase();
+    if(!idx.has(key)) idx.set(key, []);
+    idx.get(key).push({nemo,gen,potencia,promedio});
+  });
+  return idx;
+}
+
+function getPowerByNemo(nemo){
+  return POWER_INDEX.get(String(nemo||'').toUpperCase()) || [];
 }
 
 function buildPurchaseIndex(){
@@ -1634,19 +1689,37 @@ function showHistColumn(nemo){
 function setHistMetric(m){ histMetric=m; renderHistModal(); }
 function setHistTipo(t){ histTipo=t; renderHistModal(); }
 
+function histToolbarHtml(hasTc){
+  const showTipoFilter = histMetric!=='potencia';
+  return `<div class="hist-toolbar">
+    <div class="hist-filter-group" style="${showTipoFilter?'':'visibility:hidden'}">
+      <button class="hist-filter-btn ${histTipo==='todos'?'active':''}" onclick="setHistTipo('todos')">Todos</button>
+      <button class="hist-filter-btn ${histTipo==='Renovable'?'active':''}" onclick="setHistTipo('Renovable')">Renovable</button>
+      <button class="hist-filter-btn ${histTipo==='No Renovable'?'active':''}" onclick="setHistTipo('No Renovable')">No Renovable</button>
+    </div>
+    <div class="hist-toggle-group">
+      <button class="hist-toggle-btn ${histMetric==='energia'?'active':''}" onclick="setHistMetric('energia')">Energía (MWh)</button>
+      <button class="hist-toggle-btn ${histMetric==='precio'?'active':''}" onclick="setHistMetric('precio')" ${hasTc?'':'disabled title="Sin tipo de cambio cargado"'}>Precio Energía (USD/MWh)</button>
+      <button class="hist-toggle-btn potencia ${histMetric==='potencia'?'active':''}" onclick="setHistMetric('potencia')">Potencia (MW) · MATP</button>
+    </div>
+  </div>`;
+}
+
 function renderHistModal(){
   const body=document.getElementById('histModalBody');
   if(!histNemo) return;
+  const hasTc = Object.keys(TC_MENSUAL).length>0;
+
+  if(histMetric==='potencia'){ renderPotenciaView(body,hasTc); return; }
+
   let rows=getPurchasesByNemo(histNemo);
   if(histTipo!=='todos') rows=rows.filter(p=>p.tipo===histTipo);
   const spot=getSpotByNemo(histNemo); // no se filtra por Renovable/No Renovable: es una categoría aparte
   if(!rows.length && !spot){
-    body.innerHTML='<div class="hist-empty">Sin historial de compras para este NEMO'+(histTipo!=='todos'?' ('+histTipo+')':'')+'.</div>';
+    body.innerHTML=histToolbarHtml(hasTc)+'<div class="hist-empty">Sin historial de compras (energía) para este NEMO'+(histTipo!=='todos'?' ('+histTipo+')':'')+'.</div>';
     if(cHistChart){ cHistChart.destroy(); cHistChart=null; }
     return;
   }
-
-  const hasTc = Object.keys(TC_MENSUAL).length>0;
   // importe en USD + precio (USD/MWh) por fila y por mes
   rows = rows.map(p=>{
     const importeUsd = importeToUsd(p.importe);
@@ -1679,17 +1752,7 @@ function renderHistModal(){
   const precioPromGlobal = totalE ? totalUsd/totalE : null;
   const nGen=new Set(rows.map(p=>p.gen).filter(Boolean)).size;
 
-  let html=`<div class="hist-toolbar">
-    <div class="hist-filter-group">
-      <button class="hist-filter-btn ${histTipo==='todos'?'active':''}" onclick="setHistTipo('todos')">Todos</button>
-      <button class="hist-filter-btn ${histTipo==='Renovable'?'active':''}" onclick="setHistTipo('Renovable')">Renovable</button>
-      <button class="hist-filter-btn ${histTipo==='No Renovable'?'active':''}" onclick="setHistTipo('No Renovable')">No Renovable</button>
-    </div>
-    <div class="hist-toggle-group">
-      <button class="hist-toggle-btn ${histMetric==='energia'?'active':''}" onclick="setHistMetric('energia')">Energía (MWh)</button>
-      <button class="hist-toggle-btn ${histMetric==='precio'?'active':''}" onclick="setHistMetric('precio')" ${hasTc?'':'disabled title="Sin tipo de cambio cargado"'}>Precio Energía (USD/MWh)</button>
-    </div>
-  </div>`;
+  let html=histToolbarHtml(hasTc);
 
   html+=`<div class="panel-stats" style="grid-template-columns:1fr 1fr 1fr;margin-bottom:14px">
     <div class="panel-stat"><div class="panel-stat-lbl">Energía contratada 12m</div><div class="panel-stat-val c-green">${fmtMwh(totalE)}</div></div>
@@ -1796,6 +1859,103 @@ function renderHistModal(){
 }
 
 function rowSum(arr){ return arr.reduce((a,b)=>a+(b||0),0); }
+
+// ════════════════════════════════════════════════════════════════════════════════
+// POTENCIA (MATP) — vista separada del panel de historial (v24, botón naranja)
+// No tiene precio ni clasificación Renovable/No Renovable: es un mercado distinto
+// (potencia contratada, no energía), así que no comparte filas con el resto de la
+// tabla — nunca se mezcla un MW con un MWh.
+// ════════════════════════════════════════════════════════════════════════════════
+function fmtPotenciaTable(v){
+  if(v==null) return'—';
+  return v.toLocaleString('es-AR',{minimumFractionDigits:2,maximumFractionDigits:2})+' MW';
+}
+
+function renderPotenciaView(body,hasTc){
+  const rows=getPowerByNemo(histNemo);
+  if(!rows.length){
+    body.innerHTML=histToolbarHtml(hasTc)+'<div class="hist-empty">Sin compras de potencia (MATP) registradas para este NEMO.</div>';
+    if(cHistChart){ cHistChart.destroy(); cHistChart=null; }
+    return;
+  }
+
+  const nGen=new Set(rows.map(p=>p.gen).filter(Boolean)).size;
+  // total mensual = suma entre generadores (la potencia SÍ es sumable entre proveedores distintos)
+  const monthAgg=Array.from({length:12},(_,i)=>{
+    const vals=rows.map(p=>p.potencia[i]).filter(v=>v!=null);
+    return vals.length ? rowSum(vals) : null;
+  });
+  const mesesConDato=monthAgg.filter(v=>v!=null).length;
+  const promGlobal = mesesConDato ? rowSum(monthAgg.filter(v=>v!=null))/mesesConDato : null;
+
+  let html=histToolbarHtml(hasTc);
+
+  html+=`<div class="panel-stats" style="grid-template-columns:1fr 1fr 1fr;margin-bottom:14px">
+    <div class="panel-stat"><div class="panel-stat-lbl">Potencia prom. (MW)</div><div class="panel-stat-val c-orange">${promGlobal!=null?fmtPotenciaTable(promGlobal):'—'}</div></div>
+    <div class="panel-stat"><div class="panel-stat-lbl">Generadores</div><div class="panel-stat-val c-blue">${nGen}</div></div>
+    <div class="panel-stat"><div class="panel-stat-lbl">Meses con dato</div><div class="panel-stat-val c-purple">${mesesConDato}/12</div></div>
+  </div>`;
+
+  html+=`<div style="font-family:'DM Mono',monospace;font-size:10.5px;color:var(--ink3);margin:-10px 0 16px">⚠ Potencia contratada en el MATP (mercado a término de potencia), no incluye precio — ese dato no está en el resumen mensual del DTE. Solo se usó la hoja "Resumen Mensual" de cada archivo; los meses sin esa hoja quedan en "—".</div>`;
+
+  html+=`<div class="hist-chart-wrap"><canvas id="histChartCanvas"></canvas></div>`;
+
+  html+=`<div class="hist-table-wrap"><table class="hist-table"><thead><tr>
+    <th>Generador</th><th>Comercializador</th><th>Tipo</th>
+    ${HIST_MONTH_LBL.map(m=>`<th>${m}</th>`).join('')}
+    <th>Prom.</th>
+  </tr></thead><tbody>`;
+
+  const sortedRows=[...rows].sort((a,b)=>{
+    const fa=firstActiveMonthIndexArr(a.potencia), fb=firstActiveMonthIndexArr(b.potencia);
+    if(fa!==fb) return fa-fb;
+    return (b.promedio||0)-(a.promedio||0);
+  });
+  sortedRows.forEach(p=>{
+    html+=`<tr>
+      <td class="hist-td-gen" title="${p.gen}">${p.gen||'—'}</td>
+      <td class="hist-td-com">—</td>
+      <td class="hist-td-tipo"><span class="hist-tipo-tag potencia">Potencia</span></td>
+      ${p.potencia.map(v=>`<td>${fmtPotenciaTable(v)}</td>`).join('')}
+      <td><b>${fmtPotenciaTable(p.promedio)}</b></td>
+    </tr>`;
+  });
+
+  html+=`<tr class="hist-total-row">
+    <td class="hist-td-gen">Total contratado</td><td></td><td></td>
+    ${monthAgg.map(v=>`<td>${fmtPotenciaTable(v)}</td>`).join('')}
+    <td>${fmtPotenciaTable(promGlobal)}</td>
+  </tr>`;
+
+  html+=`</tbody></table></div>`;
+  body.innerHTML=html;
+
+  const ctx=document.getElementById('histChartCanvas');
+  if(cHistChart){ cHistChart.destroy(); cHistChart=null; }
+  const topN=8;
+  const byGen=[...rows].sort((a,b)=>(b.promedio||0)-(a.promedio||0));
+  const top=byGen.slice(0,topN);
+  const rest=byGen.slice(topN);
+  const palette=['#f9924d','#fb923c','#e8853a','#d9772f','#c96825','#f0a35f','#e6935a','#d18040'];
+  const datasets=top.map((p,i)=>({label:p.gen||'—',data:p.potencia,backgroundColor:palette[i%palette.length],stack:'s'}));
+  if(rest.length){
+    const otros=Array.from({length:12},(_,i)=>{
+      const vals=rest.map(p=>p.potencia[i]).filter(v=>v!=null);
+      return vals.length?rowSum(vals):null;
+    });
+    datasets.push({label:'Otros ('+rest.length+')',data:otros,backgroundColor:'#8a6a52',stack:'s'});
+  }
+  cHistChart=new Chart(ctx,{type:'bar',data:{labels:HIST_MONTH_LBL,datasets},options:{
+    responsive:true,maintainAspectRatio:false,
+    plugins:{legend:{position:'bottom',labels:{color:'#9aa7c4',boxWidth:10,font:{size:10}}},tooltip:{callbacks:{label:c=>' '+c.dataset.label+': '+fmtPotenciaTable(c.raw)}}},
+    scales:{x:{stacked:true,grid:{display:false},ticks:{color:'#6b7691'}},y:{stacked:true,grid:{color:'#222c44'},ticks:{color:'#6b7691',callback:v=>v+' MW'}}}
+  }});
+}
+
+function firstActiveMonthIndexArr(arr){
+  for(let i=0;i<12;i++){ if(arr[i]) return i; }
+  return 12;
+}
 
 // mes (0-11) en el que el generador aparece por primera vez con energía>0 dentro
 // de la ventana de 12 meses — se usa como proxy de "antigüedad" para ordenar la tabla.
