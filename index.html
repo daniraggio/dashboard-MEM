@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Dashboard MEM — Consumo & Contratos v25</title>
+<title>Dashboard MEM — Consumo & Contratos v26</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Bricolage+Grotesque:wght@400;600;800&display=swap" rel="stylesheet">
@@ -11,7 +11,7 @@
 <!--
 ================================================================================
 DASHBOARD MEM UNIFICADO — DOCUMENTACIÓN INTERNA (solo para Claude)
-Versión: 25
+Versión: 26
 Repositorio: daniraggio/dashboard-MEM
 URL: https://daniraggio.github.io/dashboard-MEM/
 ================================================================================
@@ -221,6 +221,25 @@ v25: Badge de Potencia (MATP) en la tabla principal, separado del badge de
     contratos de energía formales (CONTRACTS) pero sí potencia MATP, la columna
     izquierda muestra "Sin contratos registrados" y la derecha igual se puebla con
     la potencia — no es un error, son dos fuentes de datos independientes.
+v26: Corrección de unidad — la potencia del MATP se mide en MWhrp (MW en horas de
+    remuneración de potencia), no en MW; fmtPotenciaTable() y el badge de la tabla
+    principal ahora muestran MWhrp SIN decimales (antes 2 decimales, unidad "MW").
+    Se agregó marzo-2026 a Potencia_MATP (el archivo que faltaba esa hoja se
+    volvió a subir, ya con "RESUMEN MENSUAL" — ahora hay 8/12 meses en vez de 7).
+    Nueva hoja "Potencia_Spot" en HISTORIAL_COMPRAS.xlsx: potencia comprada a
+    spot (sin cobertura MATP), en MWhrp, SIN precio (pedido explícito). Fuente:
+    DTE, tabla ITEMS (alias operativo "Q_repitems") filtrada a DOC='GUME',
+    SUBTOTAL='CAPOT1' ("Cargos de Potencia"), campo Cantidad — AGE_ID mapeado a
+    NEMO vía la tabla AGENTES (general, disponible los 12 meses, a diferencia de
+    ANEXO_GUME400 que solo cubre nov-25 en adelante). Cobertura: 12/12 meses,
+    3.439 NEMOs. ⚠ Solo agentes GUME: en este DTE, GUMA tiene un concepto
+    distinto ("Compra de Potencia"/COMPO2 en vez de "Cargos de Potencia"/CAPOT1),
+    así que no se asumió que sea equivalente — no se extrajo para GUMA.
+    parsePowerSpotSheet()→POWER_SPOT_INDEX (Map NEMO→registro). Se muestra como
+    PRIMERA fila de la tabla de la pestaña Potencia (tag "Spot" azul, mismo
+    patrón que el Spot de energía), y como serie aparte en el gráfico apilado —
+    NO se suma dentro de "Total contratado (MATP)", que sigue siendo solo lo
+    cubierto por contratos MATP.
 ================================================================================
 -->
 
@@ -543,7 +562,7 @@ table.hist-table tbody td.hist-td-tipo { text-align:left; }
   <div>
     <div class="eyebrow">
       Sistema de Análisis Energético — MEM
-      <span class="version-badge">v25 UNIFICADO</span>
+      <span class="version-badge">v26 UNIFICADO</span>
     </div>
     <h1>Grandes Usuarios<br><span>&amp; Contratos</span></h1>
   </div>
@@ -859,6 +878,7 @@ let PURCHASES = [];              // registros parseados de HISTORIAL_COMPRAS.xls
 let PURCHASE_INDEX = new Map();  // NEMO (upper) -> [registros]
 let SPOT_INDEX = new Map();      // NEMO (upper) -> registro spot (hoja Spot), a lo sumo uno por nemo
 let POWER_INDEX = new Map();     // NEMO (upper) -> [registros de potencia MATP (hoja Potencia_MATP)]
+let POWER_SPOT_INDEX = new Map();// NEMO (upper) -> registro de potencia a spot (hoja Potencia_Spot), a lo sumo uno
 let TC_MENSUAL = {};             // '2025-07' -> TC ARS/USD, desde hoja TC_Mensual del xlsx
 let histNemo = null;
 let histMetric = 'energia';      // 'energia' | 'precio'
@@ -954,8 +974,9 @@ async function loadHistorialCompras(){
     TC_MENSUAL = parseTcSheet(wb);
     SPOT_INDEX = parseSpotSheet(wb);
     POWER_INDEX = parsePowerSheet(wb);
+    POWER_SPOT_INDEX = parsePowerSpotSheet(wb);
     buildPurchaseIndex();
-    console.log(`[Historial] ${PURCHASES.length} registros · ${PURCHASE_INDEX.size} NEMOs · TC: ${Object.keys(TC_MENSUAL).length} meses · Spot: ${SPOT_INDEX.size} NEMOs · Potencia: ${POWER_INDEX.size} NEMOs`);
+    console.log(`[Historial] ${PURCHASES.length} registros · ${PURCHASE_INDEX.size} NEMOs · TC: ${Object.keys(TC_MENSUAL).length} meses · Spot: ${SPOT_INDEX.size} NEMOs · Potencia: ${POWER_INDEX.size} NEMOs · Potencia Spot: ${POWER_SPOT_INDEX.size} NEMOs`);
   }catch(e){
     console.warn('[Historial] No se pudo cargar HISTORIAL_COMPRAS.xlsx:', e.message);
     PURCHASES = [];
@@ -963,6 +984,7 @@ async function loadHistorialCompras(){
     TC_MENSUAL = {};
     SPOT_INDEX = new Map();
     POWER_INDEX = new Map();
+    POWER_SPOT_INDEX = new Map();
   }
 }
 
@@ -1057,6 +1079,34 @@ function getPowerByNemo(nemo){
   return POWER_INDEX.get(String(nemo||'').toUpperCase()) || [];
 }
 
+// hoja "Potencia_Spot": NEMO, POT_2025-07..POT_2026-06 (MWhrp — MW en horas de
+// remuneración de potencia — comprados a spot ese mes, sin cobertura MATP),
+// POT_PROMEDIO. Fuente: DTE, tabla ITEMS (a la que en la operatoria le dicen
+// "Q_repitems") filtrada a DOC='GUME', SUBTOTAL='CAPOT1' ("Cargos de Potencia"),
+// campo Cantidad — mapeado de AGE_ID a NEMO vía la tabla AGENTES. Sin precio, por
+// pedido explícito. Solo agentes tipo GUME: en este DTE, GUMA tiene un concepto
+// distinto ("Compra de Potencia" / COMPO2), no "Cargos de Potencia", así que no
+// se asumió que sea lo mismo.
+function parsePowerSpotSheet(wb){
+  const idx = new Map();
+  const sheetName = wb.SheetNames.find(n=>n==='Potencia_Spot');
+  if(!sheetName) return idx;
+  const rows = XLSX.utils.sheet_to_json(wb.Sheets[sheetName],{header:1});
+  rows.slice(1).forEach(r=>{
+    const nemo = String(r[0]||'').trim();
+    if(!nemo) return;
+    const num = v => (v!=null && v!=='') ? Number(v) : null;
+    const potencia = Array.from({length:12},(_,i)=>num(r[1+i]));
+    const promedio = num(r[13]);
+    idx.set(nemo.toUpperCase(), {nemo,potencia,promedio});
+  });
+  return idx;
+}
+
+function getPowerSpotByNemo(nemo){
+  return POWER_SPOT_INDEX.get(String(nemo||'').toUpperCase()) || null;
+}
+
 // badge naranja "Potencia (MATP)" para la fila de la tabla principal, separado del
 // badge azul/violeta de contratos de energía — mismo estilo, distinto color y clic.
 function buildPotenciaBadgeHtml(nemo){
@@ -1064,12 +1114,12 @@ function buildPotenciaBadgeHtml(nemo){
   if(!rows.length) return'';
   const cnt=rows.length; // cantidad de generadores con potencia contratada en el MATP
   const totalMW=rows.reduce((s,p)=>s+(p.promedio||0),0);
-  const mwStr=totalMW>0?`${totalMW.toFixed(1)}MW`:'';
-  const title=`${cnt} generador(es) de potencia (MATP) · ${totalMW.toFixed(1)} MW promedio 12m`;
+  const mwStr=totalMW>0?`${Math.round(totalMW)}MWhrp`:'';
+  const title=`${cnt} generador(es) de potencia (MATP) · ${Math.round(totalMW)} MWhrp promedio 12m`;
   return `<span class="contract-badge potencia-badge" onclick="openPanelToPotencia(event,'${nemo}')" title="${title}">⚡ ${cnt}${mwStr?`<span class="badge-vol">${mwStr}</span>`:''}</span>`;
 }
 
-// abre el side-panel y lo deja directo en la pestaña "Potencia (MW) · MATP",
+// abre el side-panel y lo deja directo en la pestaña "Potencia (MWhrp) · MATP",
 // sin pasar por Energía primero.
 function openPanelToPotencia(e,nemo){
   openPanel(e,nemo);
@@ -1736,7 +1786,7 @@ function histToolbarHtml(hasTc){
     <div class="hist-toggle-group">
       <button class="hist-toggle-btn ${histMetric==='energia'?'active':''}" onclick="setHistMetric('energia')">Energía (MWh)</button>
       <button class="hist-toggle-btn ${histMetric==='precio'?'active':''}" onclick="setHistMetric('precio')" ${hasTc?'':'disabled title="Sin tipo de cambio cargado"'}>Precio Energía (USD/MWh)</button>
-      <button class="hist-toggle-btn potencia ${histMetric==='potencia'?'active':''}" onclick="setHistMetric('potencia')">Potencia (MW) · MATP</button>
+      <button class="hist-toggle-btn potencia ${histMetric==='potencia'?'active':''}" onclick="setHistMetric('potencia')">Potencia (MWhrp) · MATP</button>
     </div>
   </div>`;
 }
@@ -1904,13 +1954,14 @@ function rowSum(arr){ return arr.reduce((a,b)=>a+(b||0),0); }
 // ════════════════════════════════════════════════════════════════════════════════
 function fmtPotenciaTable(v){
   if(v==null) return'—';
-  return v.toLocaleString('es-AR',{minimumFractionDigits:2,maximumFractionDigits:2})+' MW';
+  return Math.round(v).toLocaleString('es-AR')+' MWhrp';
 }
 
 function renderPotenciaView(body,hasTc){
   const rows=getPowerByNemo(histNemo);
-  if(!rows.length){
-    body.innerHTML=histToolbarHtml(hasTc)+'<div class="hist-empty">Sin compras de potencia (MATP) registradas para este NEMO.</div>';
+  const spot=getPowerSpotByNemo(histNemo); // "Cargos Potencia" a spot — no se mezcla con lo contratado en MATP
+  if(!rows.length && !spot){
+    body.innerHTML=histToolbarHtml(hasTc)+'<div class="hist-empty">Sin compras de potencia (MATP ni spot) registradas para este NEMO.</div>';
     if(cHistChart){ cHistChart.destroy(); cHistChart=null; }
     return;
   }
@@ -1927,12 +1978,12 @@ function renderPotenciaView(body,hasTc){
   let html=histToolbarHtml(hasTc);
 
   html+=`<div class="panel-stats" style="grid-template-columns:1fr 1fr 1fr;margin-bottom:14px">
-    <div class="panel-stat"><div class="panel-stat-lbl">Potencia prom. (MW)</div><div class="panel-stat-val c-orange">${promGlobal!=null?fmtPotenciaTable(promGlobal):'—'}</div></div>
+    <div class="panel-stat"><div class="panel-stat-lbl">Potencia contr. prom. (MWhrp)</div><div class="panel-stat-val c-orange">${promGlobal!=null?fmtPotenciaTable(promGlobal):'—'}</div></div>
     <div class="panel-stat"><div class="panel-stat-lbl">Generadores</div><div class="panel-stat-val c-blue">${nGen}</div></div>
     <div class="panel-stat"><div class="panel-stat-lbl">Meses con dato</div><div class="panel-stat-val c-purple">${mesesConDato}/12</div></div>
   </div>`;
 
-  html+=`<div style="font-family:'DM Mono',monospace;font-size:10.5px;color:var(--ink3);margin:-10px 0 16px">⚠ Potencia contratada en el MATP (mercado a término de potencia), no incluye precio — ese dato no está en el resumen mensual del DTE. Solo se usó la hoja "Resumen Mensual" de cada archivo; los meses sin esa hoja quedan en "—".</div>`;
+  html+=`<div style="font-family:'DM Mono',monospace;font-size:10.5px;color:var(--ink3);margin:-10px 0 16px">⚠ Potencia contratada en el MATP (mercado a término de potencia), en MWhrp (MW en horas de remuneración de potencia). No incluye precio — ese dato no está en el resumen mensual del DTE. Solo se usó la hoja "Resumen Mensual" de cada archivo; los meses sin esa hoja quedan en "—".</div>`;
 
   html+=`<div class="hist-chart-wrap"><canvas id="histChartCanvas"></canvas></div>`;
 
@@ -1941,6 +1992,16 @@ function renderPotenciaView(body,hasTc){
     ${HIST_MONTH_LBL.map(m=>`<th>${m}</th>`).join('')}
     <th>Prom.</th>
   </tr></thead><tbody>`;
+
+  if(spot){
+    html+=`<tr class="hist-spot-row">
+      <td class="hist-td-gen" title="Cargos de Potencia (ITEMS/DOC=GUME/SUBTOTAL=CAPOT1) — potencia sin cobertura MATP, comprada a spot">⚡ Potencia a Spot</td>
+      <td class="hist-td-com">—</td>
+      <td class="hist-td-tipo"><span class="hist-tipo-tag spot">Spot</span></td>
+      ${spot.potencia.map(v=>`<td>${fmtPotenciaTable(v)}</td>`).join('')}
+      <td><b>${fmtPotenciaTable(spot.promedio)}</b></td>
+    </tr>`;
+  }
 
   const sortedRows=[...rows].sort((a,b)=>{
     const fa=firstActiveMonthIndexArr(a.potencia), fb=firstActiveMonthIndexArr(b.potencia);
@@ -1957,11 +2018,13 @@ function renderPotenciaView(body,hasTc){
     </tr>`;
   });
 
-  html+=`<tr class="hist-total-row">
-    <td class="hist-td-gen">Total contratado</td><td></td><td></td>
-    ${monthAgg.map(v=>`<td>${fmtPotenciaTable(v)}</td>`).join('')}
-    <td>${fmtPotenciaTable(promGlobal)}</td>
-  </tr>`;
+  if(rows.length){
+    html+=`<tr class="hist-total-row">
+      <td class="hist-td-gen">Total contratado (MATP)</td><td></td><td></td>
+      ${monthAgg.map(v=>`<td>${fmtPotenciaTable(v)}</td>`).join('')}
+      <td>${fmtPotenciaTable(promGlobal)}</td>
+    </tr>`;
+  }
 
   html+=`</tbody></table></div>`;
   body.innerHTML=html;
@@ -1981,10 +2044,13 @@ function renderPotenciaView(body,hasTc){
     });
     datasets.push({label:'Otros ('+rest.length+')',data:otros,backgroundColor:'#8a6a52',stack:'s'});
   }
+  if(spot){
+    datasets.push({label:'Spot',data:spot.potencia,backgroundColor:'#4d8fff',stack:'s'});
+  }
   cHistChart=new Chart(ctx,{type:'bar',data:{labels:HIST_MONTH_LBL,datasets},options:{
     responsive:true,maintainAspectRatio:false,
     plugins:{legend:{position:'bottom',labels:{color:'#9aa7c4',boxWidth:10,font:{size:10}}},tooltip:{callbacks:{label:c=>' '+c.dataset.label+': '+fmtPotenciaTable(c.raw)}}},
-    scales:{x:{stacked:true,grid:{display:false},ticks:{color:'#6b7691'}},y:{stacked:true,grid:{color:'#222c44'},ticks:{color:'#6b7691',callback:v=>v+' MW'}}}
+    scales:{x:{stacked:true,grid:{display:false},ticks:{color:'#6b7691'}},y:{stacked:true,grid:{color:'#222c44'},ticks:{color:'#6b7691',callback:v=>v+' MWhrp'}}}
   }});
 }
 
