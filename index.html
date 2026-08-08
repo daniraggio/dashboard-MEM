@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Dashboard MEM — Consumo & Contratos v24</title>
+<title>Dashboard MEM — Consumo & Contratos v25</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Bricolage+Grotesque:wght@400;600;800&display=swap" rel="stylesheet">
@@ -11,7 +11,7 @@
 <!--
 ================================================================================
 DASHBOARD MEM UNIFICADO — DOCUMENTACIÓN INTERNA (solo para Claude)
-Versión: 24
+Versión: 25
 Repositorio: daniraggio/dashboard-MEM
 URL: https://daniraggio.github.io/dashboard-MEM/
 ================================================================================
@@ -210,6 +210,17 @@ v24: Potencia contratada en el MATP (mercado a término de potencia) — tercera
     (la potencia SÍ es sumable entre generadores distintos, a diferencia del
     precio). fmtPotenciaTable() formatea en MW con 2 decimales, un formato propio
     de esta vista (no reusa fmtEnergiaTable ni fmtMwh).
+v25: Badge de Potencia (MATP) en la tabla principal, separado del badge de
+    contratos de energía (azul/violeta) — badge NARANJA nuevo al lado, formato
+    "⚡ {cant. generadores} {MW promedio}" (ej. "⚡ 1 4,3MW"), construido por
+    buildPotenciaBadgeHtml(nemo). Columna .td-contracts pasó de 140px a 220px
+    para que entren los dos badges lado a lado (flex, .td-contracts-inner).
+    Clic en el badge de potencia → openPanelToPotencia(e,nemo): abre el side-panel
+    y lo deja directo en la pestaña "Potencia (MW) · MATP" (fuerza histMetric=
+    'potencia' y re-renderiza), sin pasar primero por Energía. Si el NEMO no tiene
+    contratos de energía formales (CONTRACTS) pero sí potencia MATP, la columna
+    izquierda muestra "Sin contratos registrados" y la derecha igual se puebla con
+    la potencia — no es un error, son dos fuentes de datos independientes.
 ================================================================================
 -->
 
@@ -371,17 +382,20 @@ tbody td.td-name { text-align:left; font-family:'Bricolage Grotesque',sans-serif
 tbody td.td-nemo { text-align:left; font-size:11px; color:var(--ink3); }
 tbody td.td-type { text-align:left; }
 tbody td.td-dist { text-align:left; font-size:11px; color:var(--ink2); max-width:160px; overflow:hidden; text-overflow:ellipsis; }
-tbody td.td-contracts { text-align:left; width:140px; }
+tbody td.td-contracts { text-align:left; width:220px; }
 td.ann { font-weight:500; color:var(--ink) !important; }
 td.mhi { background:rgba(251,146,60,0.12) !important; color:var(--accent) !important; font-weight:500; }
 .type-badge { display:inline-block; padding:1px 7px; border-radius:3px; font-size:10px; font-family:'DM Mono',monospace; letter-spacing:1px; }
 .badge-GUMA { background:rgba(251,146,60,0.15); color:var(--guma); }
 .badge-GUME { background:rgba(45,212,191,0.15);  color:var(--gume); }
 .badge-GUDI { background:rgba(91,141,239,0.15);  color:var(--gudi); }
+.td-contracts-inner { display:flex; align-items:center; gap:5px; flex-wrap:wrap; }
 .contract-badge { display:inline-flex; align-items:center; gap:4px; padding:2px 8px; border-radius:12px; font-size:10px; font-family:'DM Mono',monospace; font-weight:600; background:var(--blue-bg); color:var(--blue-text); border:1px solid rgba(77,143,255,0.3); cursor:pointer; transition:all 0.15s; white-space:nowrap; }
 .contract-badge:hover { background:var(--blue); color:var(--bg); }
 .contract-badge.grouped { background:var(--purple-bg); color:var(--purple-text); border-color:rgba(167,139,250,0.25); }
 .contract-badge.grouped:hover { background:var(--purple); color:var(--bg); }
+.contract-badge.potencia-badge { background:var(--orange-bg); color:var(--orange-text); border-color:rgba(251,146,60,0.35); }
+.contract-badge.potencia-badge:hover { background:var(--orange); color:#1a1005; }
 .badge-vol { font-size:9px; opacity:0.72; margin-left:1px; }
 .no-contract { font-family:'DM Mono',monospace; font-size:10px; color:var(--ink3); }
 .col-resizer { position:absolute; right:0; top:0; bottom:0; width:5px; cursor:col-resize; user-select:none; z-index:3; }
@@ -529,7 +543,7 @@ table.hist-table tbody td.hist-td-tipo { text-align:left; }
   <div>
     <div class="eyebrow">
       Sistema de Análisis Energético — MEM
-      <span class="version-badge">v24 UNIFICADO</span>
+      <span class="version-badge">v25 UNIFICADO</span>
     </div>
     <h1>Grandes Usuarios<br><span>&amp; Contratos</span></h1>
   </div>
@@ -1043,6 +1057,26 @@ function getPowerByNemo(nemo){
   return POWER_INDEX.get(String(nemo||'').toUpperCase()) || [];
 }
 
+// badge naranja "Potencia (MATP)" para la fila de la tabla principal, separado del
+// badge azul/violeta de contratos de energía — mismo estilo, distinto color y clic.
+function buildPotenciaBadgeHtml(nemo){
+  const rows=getPowerByNemo(nemo);
+  if(!rows.length) return'';
+  const cnt=rows.length; // cantidad de generadores con potencia contratada en el MATP
+  const totalMW=rows.reduce((s,p)=>s+(p.promedio||0),0);
+  const mwStr=totalMW>0?`${totalMW.toFixed(1)}MW`:'';
+  const title=`${cnt} generador(es) de potencia (MATP) · ${totalMW.toFixed(1)} MW promedio 12m`;
+  return `<span class="contract-badge potencia-badge" onclick="openPanelToPotencia(event,'${nemo}')" title="${title}">⚡ ${cnt}${mwStr?`<span class="badge-vol">${mwStr}</span>`:''}</span>`;
+}
+
+// abre el side-panel y lo deja directo en la pestaña "Potencia (MW) · MATP",
+// sin pasar por Energía primero.
+function openPanelToPotencia(e,nemo){
+  openPanel(e,nemo);
+  histMetric='potencia';
+  renderHistModal();
+}
+
 function buildPurchaseIndex(){
   PURCHASE_INDEX = new Map();
   PURCHASES.forEach(p=>{
@@ -1507,7 +1541,7 @@ function buildRowHtml(d){
   const mCells = d.monthly.map((v,i)=>`<td class="col-m${i===aMonth?' mhi':''}">${v!=null?fmt(v):'—'}</td>`).join('');
   const cnt    = countContracts(d.id);
   const grupal = isGrupalMember(d.id);
-  let contractCell;
+  let energyBadge = '';
   if(cnt>0){
     const cls    = grupal?'grouped':'';
     const icon   = grupal?'⋯':'◉';
@@ -1516,10 +1550,12 @@ function buildRowHtml(d){
     const title  = grupal
       ? `Incluido en demanda grupal · ${cnt} contrato(s)${volStr}`
       : `${cnt} contrato(s) directo(s)${volStr}`;
-    contractCell = `<td class="td-contracts"><span class="contract-badge ${cls}" onclick="openPanel(event,'${d.id}')" title="${title}">${icon} ${cnt}${vol>0?`<span class="badge-vol">${fmtMwh(vol)}</span>`:''}</span></td>`;
-  } else {
-    contractCell = `<td class="td-contracts"><span class="no-contract">—</span></td>`;
+    energyBadge = `<span class="contract-badge ${cls}" onclick="openPanel(event,'${d.id}')" title="${title}">${icon} ${cnt}${vol>0?`<span class="badge-vol">${fmtMwh(vol)}</span>`:''}</span>`;
   }
+  const potenciaBadge = buildPotenciaBadgeHtml(d.id);
+  const contractCell = (energyBadge || potenciaBadge)
+    ? `<td class="td-contracts"><div class="td-contracts-inner">${energyBadge}${potenciaBadge}</div></td>`
+    : `<td class="td-contracts"><span class="no-contract">—</span></td>`;
   return `<tr class="${selectedNemo===d.id?'selected':''}" onclick="rowSelect(event,'${d.id}')">
     <td class="td-name" title="${d.name}">${d.name}</td>
     <td class="td-nemo">${d.id}</td>
