@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Dashboard MEM — Consumo & Contratos v26</title>
+<title>Dashboard MEM — Consumo & Contratos v27</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Bricolage+Grotesque:wght@400;600;800&display=swap" rel="stylesheet">
@@ -11,7 +11,7 @@
 <!--
 ================================================================================
 DASHBOARD MEM UNIFICADO — DOCUMENTACIÓN INTERNA (solo para Claude)
-Versión: 26
+Versión: 27
 Repositorio: daniraggio/dashboard-MEM
 URL: https://daniraggio.github.io/dashboard-MEM/
 ================================================================================
@@ -240,6 +240,28 @@ v26: Corrección de unidad — la potencia del MATP se mide en MWhrp (MW en hora
     patrón que el Spot de energía), y como serie aparte en el gráfico apilado —
     NO se suma dentro de "Total contratado (MATP)", que sigue siendo solo lo
     cubierto por contratos MATP.
+v27: Meses YA NO hardcodeados — hasta v26, HIST_MONTH_KEYS/HIST_MONTH_LBL (para
+    Energía/Precio/Potencia del historial) y MO (para los gráficos principales
+    de consumo, cClient/cMonthly/cCompare/cRanking/export CSV) estaban fijos en
+    el código a la ventana jul-2025..jun-2026. Cuando actualizar_mensual.py hace
+    rodar la ventana (ej. a ago-2025..jul-2026), esos arrays quedaban VIEJOS y
+    mal etiquetados aunque los valores en sí siguieran bien posicionados (el
+    parseo es por posición de columna, no por el label).
+    Ahora se derivan en tiempo de carga, directo de los headers de los propios
+    archivos:
+      - deriveHistMonths(wb): lee la fila de headers de Historial_Compras
+        (columnas E_YYYY-MM) → HIST_MONTH_KEYS/LBL, mutados in-place con
+        .splice() (siguen siendo const, no hace falta reasignar la referencia
+        — así los charts que ya capturaron `labels:MO` en initCharts() siguen
+        apuntando al mismo array y lo ven actualizado en el próximo .update()).
+      - deriveConsumoMonths(rows): lee las filas 1/2 (año/mes) de GUMEs.xlsx →
+        MO, mismo mecanismo de mutación in-place.
+    Si algún archivo no tiene el header esperado (formato viejo, columna
+    corrida, etc.) cada función devuelve null y el dashboard cae al array
+    hardcodeado de fallback (con warning en consola) en vez de romperse.
+    parseConsumosFile() se separó en loadConsumos()+parseConsumosRows(rows,type)
+    para poder leer el header y las filas del mismo workbook sin parsear el
+    archivo dos veces.
 ================================================================================
 -->
 
@@ -562,7 +584,7 @@ table.hist-table tbody td.hist-td-tipo { text-align:left; }
   <div>
     <div class="eyebrow">
       Sistema de Análisis Energético — MEM
-      <span class="version-badge">v26 UNIFICADO</span>
+      <span class="version-badge">v27 UNIFICADO</span>
     </div>
     <h1>Grandes Usuarios<br><span>&amp; Contratos</span></h1>
   </div>
@@ -926,6 +948,24 @@ function initCharts(){
 // ════════════════════════════════════════════════════════════════════════════════
 // CARGA DE CONSUMOS (repo dashboard-clientes)
 // ════════════════════════════════════════════════════════════════════════════════
+const MES_CORTO = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
+
+// deriva las 12 etiquetas cortas ('Jul-25', ...) de la fila de año/mes que ya
+// trae cada xlsx de consumo (filas 1 y 2, columnas C:N) — así el dashboard
+// siempre muestra la ventana real de 12 meses del archivo, sin importar cuál
+// sea, en vez de asumir un año calendario fijo.
+function deriveConsumoMonths(rows){
+  if(rows.length<2) return null;
+  const yearRow=rows[0], monthRow=rows[1];
+  const labels=[];
+  for(let i=2;i<14;i++){
+    const y=yearRow[i], m=monthRow[i];
+    if(y==null||m==null||isNaN(y)||isNaN(m)) return null;
+    labels.push(MES_CORTO[m-1]+'-'+String(y).slice(-2));
+  }
+  return labels;
+}
+
 async function loadConsumos(){
   setS('C','loading','Cargando consumos…');
   ALL=[];
@@ -938,20 +978,29 @@ async function loadConsumos(){
       });
     }catch{}
     let ok=0;
+    let monthsDerived=false;
     for(const {file,type} of DATA_FILES){
-      try{ ALL.push(...parseConsumosFile(await getXlsx(BASE_CONS+file),type)); ok++; }
-      catch(e){ console.warn('[Consumos]',file,e); }
+      try{
+        const buf=await getXlsx(BASE_CONS+file);
+        const wb=XLSX.read(buf,{type:'array'});
+        const rows=XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{header:1});
+        if(!monthsDerived){
+          const labels=deriveConsumoMonths(rows);
+          if(labels){ MO.splice(0,MO.length,...labels); monthsDerived=true; }
+        }
+        ALL.push(...parseConsumosRows(rows,type));
+        ok++;
+      }catch(e){ console.warn('[Consumos]',file,e); }
     }
     if(!ok) throw new Error('Sin archivos de consumo');
+    if(!monthsDerived) console.warn('[Consumos] No se pudieron derivar los meses del header — se usa el fallback calendario Ene-Dic.');
     setS('C','ok',`${ALL.length} clientes · ${ok}/3 archivos`);
     populateDistFilter();
     refresh();
   }catch(e){ setS('C','err','Error: '+e.message); }
 }
 
-function parseConsumosFile(buf,type){
-  const wb=XLSX.read(buf,{type:'array'});
-  const rows=XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{header:1});
+function parseConsumosRows(rows,type){
   if(rows.length<3) return[];
   return rows.slice(3).map(r=>{
     const distNemo  =String(r[0]||'').trim();
@@ -966,17 +1015,46 @@ function parseConsumosFile(buf,type){
 // ════════════════════════════════════════════════════════════════════════════════
 // HISTORIAL DE COMPRAS (v18) — energía + importe por NEMO×generador, 12 meses
 // ════════════════════════════════════════════════════════════════════════════════
+// deriva las 12 claves 'YYYY-MM' de los headers de la propia hoja
+// Historial_Compras (columnas E_YYYY-MM) — así HIST_MONTH_KEYS/LBL siempre
+// reflejan la ventana real del archivo, sin importar cuál sea, en vez de
+// quedar pisados en un mes fijo cada vez que el archivo rota.
+function deriveHistMonths(wb){
+  const ws = wb.Sheets['Historial_Compras'];
+  if(!ws) return null;
+  const header = XLSX.utils.sheet_to_json(ws,{header:1})[0];
+  if(!header) return null;
+  const keys=[];
+  for(let i=0;i<12;i++){
+    const h=header[4+i];
+    if(!h || typeof h!=='string' || !h.startsWith('E_')) return null;
+    keys.push(h.slice(2));
+  }
+  return keys;
+}
+function monthKeyToLabel(key){
+  const [y,m]=key.split('-').map(Number);
+  return MES_CORTO[m-1]+'-'+String(y).slice(-2);
+}
+
 async function loadHistorialCompras(){
   try{
     const buf = await getXlsx(BASE_CONT + HISTORIAL_FILE);
     const wb = XLSX.read(buf,{type:'array'});
+    const derivedKeys = deriveHistMonths(wb);
+    if(derivedKeys){
+      HIST_MONTH_KEYS.splice(0,HIST_MONTH_KEYS.length,...derivedKeys);
+      HIST_MONTH_LBL.splice(0,HIST_MONTH_LBL.length,...derivedKeys.map(monthKeyToLabel));
+    } else {
+      console.warn('[Historial] No se pudieron derivar los meses del header — se usa el fallback hardcodeado.');
+    }
     PURCHASES = parsePurchasesSheet(wb);
     TC_MENSUAL = parseTcSheet(wb);
     SPOT_INDEX = parseSpotSheet(wb);
     POWER_INDEX = parsePowerSheet(wb);
     POWER_SPOT_INDEX = parsePowerSpotSheet(wb);
     buildPurchaseIndex();
-    console.log(`[Historial] ${PURCHASES.length} registros · ${PURCHASE_INDEX.size} NEMOs · TC: ${Object.keys(TC_MENSUAL).length} meses · Spot: ${SPOT_INDEX.size} NEMOs · Potencia: ${POWER_INDEX.size} NEMOs · Potencia Spot: ${POWER_SPOT_INDEX.size} NEMOs`);
+    console.log(`[Historial] ${PURCHASES.length} registros · ${PURCHASE_INDEX.size} NEMOs · TC: ${Object.keys(TC_MENSUAL).length} meses · Spot: ${SPOT_INDEX.size} NEMOs · Potencia: ${POWER_INDEX.size} NEMOs · Potencia Spot: ${POWER_SPOT_INDEX.size} NEMOs · Ventana: ${HIST_MONTH_KEYS[0]}..${HIST_MONTH_KEYS[11]}`);
   }catch(e){
     console.warn('[Historial] No se pudo cargar HISTORIAL_COMPRAS.xlsx:', e.message);
     PURCHASES = [];
