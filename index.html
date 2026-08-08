@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Dashboard MEM — Consumo & Contratos v22</title>
+<title>Dashboard MEM — Consumo & Contratos v23</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Bricolage+Grotesque:wght@400;600;800&display=swap" rel="stylesheet">
@@ -11,7 +11,7 @@
 <!--
 ================================================================================
 DASHBOARD MEM UNIFICADO — DOCUMENTACIÓN INTERNA (solo para Claude)
-Versión: 22
+Versión: 23
 Repositorio: daniraggio/dashboard-MEM
 URL: https://daniraggio.github.io/dashboard-MEM/
 ================================================================================
@@ -78,16 +78,30 @@ Unificación autónoma de consumos y contratos. Todos los datos viven en este mi
   deshabilita y se avisa en el modal — nunca se inventa un TC.
   Para actualizar el TC de un mes: editar la hoja TC_Mensual del xlsx (no hace falta
   tocar código).
+  Desde v23, HISTORIAL_COMPRAS.xlsx tiene una TERCERA hoja "Spot": energía comprada
+  a CAMMESA sin contrato (pico+valle+resto) + su importe, por NEMO. Fuente: DTE
+  ANEXO_GUME400.CPRASPOT_P/V/R/PESOS (GUME, disponible nov-2025 en adelante) y
+  ANEXO_GUMA.CPRA_SPOT_P/V/R/PESOS (GUMA, disponible feb-2026 en adelante). Formato:
+  NEMO, TIPO_AGENTE, E_2025-07..E_2026-06 (=pico+valle+resto), I_2025-07..I_2026-06
+  (ARS), P_2025-07..P_2026-06 (pico), V_*(valle), R_*(resto), E_TOTAL, I_TOTAL.
+  Meses sin ese campo en el DTE quedan null (nunca se inventa un 0). parseSpotSheet()
+  → SPOT_INDEX (Map NEMO→registro). GUDI NO tiene esta hoja: el DTE solo trae la
+  compra spot a nivel del distribuidor completo (ANEXO_DIST), no por agente
+  individual, así que no hay manera de atribuírsela a un NEMO GUDI sin inventar un
+  reparto proporcional.
   PURCHASES[]: array parseado. PURCHASE_INDEX (Map NEMO→registros): O(1) lookup,
   reconstruir con buildPurchaseIndex() tras cada carga.
   UI (v21): NO es un modal. El side-panel (#sidePanel) tiene dos columnas fijas y
-  SIEMPRE visibles juntas (#panelCols → #panelColLeft 580px con los contratos +
-  #panelColRight con el historial, ancho --panel-w = min(1600px,96vw)). openPanel()
+  SIEMPRE visibles juntas (#panelCols → #panelColLeft con los contratos +
+  #panelColRight con el historial, ancho --panel-w = min(1900px,98vw), columna
+  izquierda 420px — ver v22). openPanel()
   llama a showHistColumn(nemo) automáticamente al abrir cualquier NEMO — no hay
   botón/click intermedio. Métricas del panel derecho: SOLO "Energía (MWh)" y
   "Precio Energía (USD/MWh)" (=importeUsd/energia por fila y mes; fila de abajo
   muestra el promedio ponderado mensual, no una suma — el precio no es sumable).
-  Filtro Renovable/No Renovable/Todos se mantiene. Si el metric es precio, el
+  La fila de Spot (v23) se muestra siempre primero y NO se filtra por Renovable/No
+  Renovable/Todos (es una categoría aparte). Filtro Renovable/No Renovable/Todos
+  se mantiene para el resto de las filas. Si el metric es precio, el
   gráfico cambia de barras apiladas (energía, por generador) a una línea con el
   precio promedio ponderado mensual (no tiene sentido apilar precios).
 
@@ -165,6 +179,18 @@ v22: Panel izquierdo más angosto (580px→420px) y --panel-w más ancho
     métrica activa. Formato de energía específico de esta tabla (fmtEnergiaTable):
     MWh sin decimales, GWh con un decimal — distinto del fmtMwh global que usa el
     resto del dashboard.
+v23: Energía comprada a CAMMESA sin contrato ("Mercado Spot"), pico+valle+resto,
+    y su precio. Fuente: nueva hoja "Spot" en HISTORIAL_COMPRAS.xlsx (NEMO,
+    TIPO_AGENTE, E_*/I_*/P_*/V_*/R_* por mes, E_TOTAL, I_TOTAL — parseSpotSheet()
+    → SPOT_INDEX, Map NEMO→registro). Se muestra como PRIMERA fila de la tabla del
+    historial, con su propio tag "Spot" (azul) — no se filtra por Renovable/No
+    Renovable porque es una categoría aparte (compra sin contrato). ⚠ Cobertura
+    parcial de datos: el DTE solo trae este desglose para GUME desde nov-2025 y
+    para GUMA desde feb-2026 (antes usaba otro formato de tabla sin este campo);
+    los meses sin dato muestran "—", nunca se inventa un valor. Para GUDI no está
+    disponible a nivel de agente individual en este DTE (solo a nivel del
+    distribuidor completo, tabla ANEXO_DIST) — no se agregó fila de Spot para
+    clientes tipo GUDI.
 ================================================================================
 -->
 
@@ -459,6 +485,8 @@ table.hist-table thead tr th:first-child, table.hist-table thead tr th:nth-child
 table.hist-table tbody tr { border-bottom:1px solid var(--bg2); }
 table.hist-table tbody tr:hover { background:var(--bg2); }
 table.hist-table tbody tr.hist-total-row { background:var(--bg2); font-weight:700; }
+table.hist-table tbody tr.hist-spot-row { background:var(--blue-bg); font-weight:600; border-bottom:2px solid var(--blue); }
+table.hist-table tbody tr.hist-spot-row:hover { background:var(--blue-bg); }
 table.hist-table tbody td { padding:5px 8px; text-align:right; font-family:'DM Mono',monospace; font-size:11px; color:var(--ink2); white-space:nowrap; }
 table.hist-table tbody td.hist-td-gen { text-align:left; font-family:'Bricolage Grotesque',sans-serif; font-weight:600; font-size:12px; color:var(--ink); max-width:160px; overflow:hidden; text-overflow:ellipsis; }
 table.hist-table tbody td.hist-td-com { text-align:left; font-size:10px; color:var(--ink3); max-width:120px; overflow:hidden; text-overflow:ellipsis; }
@@ -466,6 +494,7 @@ table.hist-table tbody td.hist-td-tipo { text-align:left; }
 .hist-tipo-tag { font-size:9px; font-weight:600; padding:2px 6px; border-radius:3px; }
 .hist-tipo-tag.r  { background:var(--green-bg); color:var(--green-text); }
 .hist-tipo-tag.nr { background:var(--amber-bg); color:var(--amber); }
+.hist-tipo-tag.spot { background:var(--blue); color:#fff; }
 .hist-empty { text-align:center; padding:40px 16px; font-family:'DM Mono',monospace; font-size:13px; color:var(--ink3); }
 </style>
 </head>
@@ -477,7 +506,7 @@ table.hist-table tbody td.hist-td-tipo { text-align:left; }
   <div>
     <div class="eyebrow">
       Sistema de Análisis Energético — MEM
-      <span class="version-badge">v22 UNIFICADO</span>
+      <span class="version-badge">v23 UNIFICADO</span>
     </div>
     <h1>Grandes Usuarios<br><span>&amp; Contratos</span></h1>
   </div>
@@ -789,8 +818,9 @@ const CONTRATOS_FILES = [
 const HISTORIAL_FILE  = 'HISTORIAL_COMPRAS.xlsx';
 const HIST_MONTH_KEYS = ['2025-07','2025-08','2025-09','2025-10','2025-11','2025-12','2026-01','2026-02','2026-03','2026-04','2026-05','2026-06'];
 const HIST_MONTH_LBL  = ['Jul-25','Ago-25','Sep-25','Oct-25','Nov-25','Dic-25','Ene-26','Feb-26','Mar-26','Abr-26','May-26','Jun-26'];
-let PURCHASES = [];              // registros parseados de HISTORIAL_COMPRAS.xlsx
+let PURCHASES = [];              // registros parseados de HISTORIAL_COMPRAS.xlsx (hoja Historial_Compras)
 let PURCHASE_INDEX = new Map();  // NEMO (upper) -> [registros]
+let SPOT_INDEX = new Map();      // NEMO (upper) -> registro spot (hoja Spot), a lo sumo uno por nemo
 let TC_MENSUAL = {};             // '2025-07' -> TC ARS/USD, desde hoja TC_Mensual del xlsx
 let histNemo = null;
 let histMetric = 'energia';      // 'energia' | 'precio'
@@ -884,13 +914,15 @@ async function loadHistorialCompras(){
     const wb = XLSX.read(buf,{type:'array'});
     PURCHASES = parsePurchasesSheet(wb);
     TC_MENSUAL = parseTcSheet(wb);
+    SPOT_INDEX = parseSpotSheet(wb);
     buildPurchaseIndex();
-    console.log(`[Historial] ${PURCHASES.length} registros · ${PURCHASE_INDEX.size} NEMOs · TC: ${Object.keys(TC_MENSUAL).length} meses`);
+    console.log(`[Historial] ${PURCHASES.length} registros · ${PURCHASE_INDEX.size} NEMOs · TC: ${Object.keys(TC_MENSUAL).length} meses · Spot: ${SPOT_INDEX.size} NEMOs`);
   }catch(e){
     console.warn('[Historial] No se pudo cargar HISTORIAL_COMPRAS.xlsx:', e.message);
     PURCHASES = [];
     PURCHASE_INDEX = new Map();
     TC_MENSUAL = {};
+    SPOT_INDEX = new Map();
   }
 }
 
@@ -923,6 +955,37 @@ function parseTcSheet(wb){
     if(mes && !isNaN(val)) tc[mes]=val;
   });
   return tc;
+}
+
+// hoja "Spot": NEMO,TIPO_AGENTE, E_*(12,energía total), I_*(12,importe ARS),
+// P_*(12,pico), V_*(12,valle), R_*(12,resto), E_TOTAL, I_TOTAL.
+// Solo GUME (nov-25 a jun-26) y GUMA (feb-26 a jun-26) tienen este dato en el DTE;
+// los meses sin dato quedan null (no se inventan ceros). GUDI no está disponible
+// a nivel de agente individual (ver comentario en el header del archivo).
+function parseSpotSheet(wb){
+  const idx = new Map();
+  const sheetName = wb.SheetNames.find(n=>n==='Spot');
+  if(!sheetName) return idx;
+  const rows = XLSX.utils.sheet_to_json(wb.Sheets[sheetName],{header:1});
+  rows.slice(1).forEach(r=>{
+    const nemo = String(r[0]||'').trim();
+    if(!nemo) return;
+    const tipoAgente = String(r[1]||'').trim();
+    const num = v => (v!=null && v!=='') ? Number(v) : null;
+    const energia = Array.from({length:12},(_,i)=>num(r[2+i]));
+    const importe = Array.from({length:12},(_,i)=>num(r[14+i]));
+    const pico    = Array.from({length:12},(_,i)=>num(r[26+i]));
+    const valle   = Array.from({length:12},(_,i)=>num(r[38+i]));
+    const resto   = Array.from({length:12},(_,i)=>num(r[50+i]));
+    const eTotal = num(r[62]);
+    const iTotal = num(r[63]);
+    idx.set(nemo.toUpperCase(), {nemo,tipoAgente,energia,importe,pico,valle,resto,eTotal,iTotal});
+  });
+  return idx;
+}
+
+function getSpotByNemo(nemo){
+  return SPOT_INDEX.get(String(nemo||'').toUpperCase()) || null;
 }
 
 function buildPurchaseIndex(){
@@ -1576,7 +1639,8 @@ function renderHistModal(){
   if(!histNemo) return;
   let rows=getPurchasesByNemo(histNemo);
   if(histTipo!=='todos') rows=rows.filter(p=>p.tipo===histTipo);
-  if(!rows.length){
+  const spot=getSpotByNemo(histNemo); // no se filtra por Renovable/No Renovable: es una categoría aparte
+  if(!rows.length && !spot){
     body.innerHTML='<div class="hist-empty">Sin historial de compras para este NEMO'+(histTipo!=='todos'?' ('+histTipo+')':'')+'.</div>';
     if(cHistChart){ cHistChart.destroy(); cHistChart=null; }
     return;
@@ -1596,6 +1660,20 @@ function renderHistModal(){
   const metricTotal = p => isEnergia ? p.eTotal   : p.precioProm;
   const fmtVal = v => v==null ? '—' : isEnergia ? fmtEnergiaTable(v) : ('U$S '+v.toFixed(1)+'/MWh');
 
+  // fila de Spot (compra a CAMMESA sin contrato, pico+valle+resto) — respeta null en meses sin dato
+  let spotVals=null, spotTotal=null;
+  if(spot){
+    const spotImporteUsd = spot.importe.map((v,i)=>{
+      const tc=TC_MENSUAL[HIST_MONTH_KEYS[i]];
+      return(v!=null && tc)? v/tc : null;
+    });
+    const spotPrecio = spot.energia.map((e,i)=> (e && spotImporteUsd[i]!=null) ? spotImporteUsd[i]/e : null);
+    const spotTotalUsd = spotImporteUsd.reduce((s,v)=>s+(v||0),0);
+    const spotPrecioProm = spot.eTotal ? spotTotalUsd/spot.eTotal : null;
+    spotVals  = isEnergia ? spot.energia : spotPrecio;
+    spotTotal = isEnergia ? spot.eTotal  : spotPrecioProm;
+  }
+
   const totalE=rows.reduce((s,p)=>s+p.eTotal,0);
   const totalUsd=rows.reduce((s,p)=>s+rowSum(p.importeUsd),0);
   const precioPromGlobal = totalE ? totalUsd/totalE : null;
@@ -1614,23 +1692,36 @@ function renderHistModal(){
   </div>`;
 
   html+=`<div class="panel-stats" style="grid-template-columns:1fr 1fr 1fr;margin-bottom:14px">
-    <div class="panel-stat"><div class="panel-stat-lbl">Energía 12m</div><div class="panel-stat-val c-green">${fmtMwh(totalE)}</div></div>
-    <div class="panel-stat"><div class="panel-stat-lbl">Precio prom. (USD/MWh)</div><div class="panel-stat-val c-purple">${hasTc&&precioPromGlobal!=null?'U$S '+precioPromGlobal.toFixed(1):'—'}</div></div>
+    <div class="panel-stat"><div class="panel-stat-lbl">Energía contratada 12m</div><div class="panel-stat-val c-green">${fmtMwh(totalE)}</div></div>
+    <div class="panel-stat"><div class="panel-stat-lbl">Precio prom. contr. (USD/MWh)</div><div class="panel-stat-val c-purple">${hasTc&&precioPromGlobal!=null?'U$S '+precioPromGlobal.toFixed(1):'—'}</div></div>
     <div class="panel-stat"><div class="panel-stat-lbl">Generadores</div><div class="panel-stat-val c-blue">${nGen}</div></div>
   </div>`;
 
   if(!hasTc){
     html+=`<div style="font-family:'DM Mono',monospace;font-size:10.5px;color:var(--ink3);margin:-10px 0 16px">⚠ No se encontró la hoja TC_Mensual en HISTORIAL_COMPRAS.xlsx — el precio en USD/MWh no se puede calcular.</div>`;
   }
+  if(spot && spot.energia.some(v=>v==null)){
+    html+=`<div style="font-family:'DM Mono',monospace;font-size:10.5px;color:var(--ink3);margin:-6px 0 16px">⚠ La compra a spot (CAMMESA) no está disponible en todos los meses — el DTE cambió de formato a mitad de la ventana de 12m. Los meses sin dato muestran "—".</div>`;
+  }
 
   html+=`<div class="hist-chart-wrap"><canvas id="histChartCanvas"></canvas></div>`;
 
-  // tabla: generador en filas, meses en columnas
+  // tabla: generador en filas, meses en columnas — el Spot va siempre primero
   html+=`<div class="hist-table-wrap"><table class="hist-table"><thead><tr>
     <th>Generador</th><th>Comercializador</th><th>Tipo</th>
     ${HIST_MONTH_LBL.map(m=>`<th>${m}</th>`).join('')}
     <th>${isEnergia?'Total':'Prom.'}</th>
   </tr></thead><tbody>`;
+
+  if(spot){
+    html+=`<tr class="hist-spot-row">
+      <td class="hist-td-gen" title="Compra a CAMMESA sin contrato (pico+valle+resto)">⚡ Mercado Spot (CAMMESA)</td>
+      <td class="hist-td-com">—</td>
+      <td class="hist-td-tipo"><span class="hist-tipo-tag spot">Spot</span></td>
+      ${spotVals.map(v=>`<td>${fmtVal(v)}</td>`).join('')}
+      <td><b>${fmtVal(spotTotal)}</b></td>
+    </tr>`;
+  }
 
   const sortedRows=[...rows].sort((a,b)=>{
     const fa=firstActiveMonthIndex(a), fb=firstActiveMonthIndex(b);
@@ -1662,7 +1753,7 @@ function renderHistModal(){
     grandTotal = precioPromGlobal;
   }
   html+=`<tr class="hist-total-row">
-    <td class="hist-td-gen">${isEnergia?'Total':'Promedio'}</td><td></td><td></td>
+    <td class="hist-td-gen">${isEnergia?'Total contratado':'Promedio contratado'}</td><td></td><td></td>
     ${monthAgg.map(v=>`<td>${fmtVal(v)}</td>`).join('')}
     <td>${fmtVal(grandTotal)}</td>
   </tr>`;
