@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Dashboard MEM — Consumo & Contratos v28</title>
+<title>Dashboard MEM — Consumo & Contratos v29</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Bricolage+Grotesque:wght@400;600;800&display=swap" rel="stylesheet">
@@ -11,7 +11,7 @@
 <!--
 ================================================================================
 DASHBOARD MEM UNIFICADO — DOCUMENTACIÓN INTERNA (solo para Claude)
-Versión: 28
+Versión: 29
 Repositorio: daniraggio/dashboard-MEM
 URL: https://daniraggio.github.io/dashboard-MEM/
 ================================================================================
@@ -264,6 +264,21 @@ v28: Revert parcial de v27 — los gráficos de la PANTALLA PRINCIPAL (cClient,
     loadConsumos()+parseConsumosRows() que se había hecho para derivar MO).
     El panel de historial (Energía/Precio/Potencia, HIST_MONTH_KEYS/LBL) SIGUE
     dinámico como quedó en v27 — no se tocó, solo se revirtió MO.
+v29: FIX — d.monthly[] se cargaba por POSICIÓN de columna del archivo, no por
+    mes calendario real. Como GUMEs/GUDI/GUMAs.xlsx son una ventana móvil que
+    NO arranca en enero (ej. jul-2025..jun-2026), la columna C (primera,
+    índice 0) es julio, no enero — pero se estaba poniendo directo en
+    monthly[0], que en toda la UI (headers de tabla, MO, filtros m0..m11,
+    sortByM, ranking, cCompare) se interpreta como "Ene". Resultado: el
+    consumo real de un mes aparecía graficado/tabulado bajo la etiqueta de
+    OTRO mes (reportado con DANOLOCY: junio real terminaba mostrado como
+    "Dic"). parseConsumosFile() ahora lee el número de mes real de la fila 2
+    del header (por columna) y arma monthly[] indexado por mes CALENDARIO
+    (0=Ene..11=Dic, año descartado — dentro de una ventana de 12 meses
+    consecutivos cada mes calendario aparece una sola vez, así que el mapeo
+    es siempre 1 a 1 sin colisiones). Afecta tabla principal, cClient,
+    cMonthly, cCompare, cRanking, filtros de columna y export CSV — todos ya
+    asumían índices calendario, así que no hizo falta tocar nada más.
 ================================================================================
 -->
 
@@ -586,7 +601,7 @@ table.hist-table tbody td.hist-td-tipo { text-align:left; }
   <div>
     <div class="eyebrow">
       Sistema de Análisis Energético — MEM
-      <span class="version-badge">v28 UNIFICADO</span>
+      <span class="version-badge">v29 UNIFICADO</span>
     </div>
     <h1>Grandes Usuarios<br><span>&amp; Contratos</span></h1>
   </div>
@@ -981,15 +996,33 @@ async function loadConsumos(){
 // ventana de 12 meses traigan los archivos. Solo el panel de historial
 // (Energía/Precio/Potencia, HIST_MONTH_KEYS/LBL) refleja la ventana real del
 // archivo — ver deriveHistMonths() más abajo.
+//
+// IMPORTANTE (fix): los archivos NO siempre empiezan en enero — son una
+// ventana móvil de 12 meses (ej. jul-2025..jun-2026), así que la columna C
+// no es necesariamente "Ene". Por eso monthly[] NO se carga por posición
+// secuencial de columna; se remapea leyendo el número de mes real de la fila
+// 2 del header (columnas C:N) y ubicando cada valor en su índice calendario
+// correspondiente (0=Ene..11=Dic, año descartado). Así "Jun" en el gráfico
+// siempre muestra el consumo real de junio, sea cual sea su posición en el
+// archivo.
 function parseConsumosFile(buf,type){
   const wb=XLSX.read(buf,{type:'array'});
   const rows=XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{header:1});
-  if(rows.length<3) return[];
+  if(rows.length<4) return[];
+  const monthRow=rows[1]; // fila 2: número de mes (1-12) por columna C..N
+  const colToCalIdx=Array.from({length:12},(_,i)=>{
+    const m=Number(monthRow[i+2]);
+    return(m>=1&&m<=12)?m-1:i; // fallback defensivo: si no se puede leer, posición tal cual
+  });
   return rows.slice(3).map(r=>{
     const distNemo  =String(r[0]||'').trim();
     const clientNemo=String(r[1]||'').trim();
     if(!clientNemo||clientNemo==='nan') return null;
-    const monthly=Array.from({length:12},(_,i)=>{const v=r[i+2];return(v!=null&&v!==''&&!isNaN(v))?Number(v):null;});
+    const monthly=Array(12).fill(null);
+    for(let i=0;i<12;i++){
+      const v=r[i+2];
+      monthly[colToCalIdx[i]]=(v!=null&&v!==''&&!isNaN(v))?Number(v):null;
+    }
     const annual=r[14]!=null?Number(r[14]):null;
     return{id:clientNemo,name:gname(clientNemo),type,dist:distNemo?gname(distNemo):'',monthly,annual};
   }).filter(Boolean);
